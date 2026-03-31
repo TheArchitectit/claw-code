@@ -1,32 +1,33 @@
-# R.A.D Codicological 2.x
+# R.A.D. Codicological
 
-A production-ready Rust implementation of Claude Code — a drop-in replacement for the original TypeScript CLI.
+**Research & Development - Conversational Development Environment**
+
+A clean-room implementation of an AI-assisted software engineering tool, built through reverse engineering of public protocols and observable behaviors.
 
 ## Overview
 
-R.A.D Codicological 2.x is a comprehensive port of Anthropic's Claude Code CLI from TypeScript/Bun to Rust. It provides the same functionality with Rust's performance, type safety, and reliability.
+This project is a reverse-engineered implementation of conversational AI development tooling. Created through independent analysis of:
+- Public protocol specifications (MCP, LSP)
+- Observable API behaviors
+- Industry-standard interaction patterns
 
-**Status:** Phase 6 complete — QueryEngine implementation with ~40 tools, ~95 commands, full LLM integration.
+**Status:** Core runtime complete with ~40 tools, full QueryEngine, multi-agent support.
 
 ## Architecture
 
 ```
 rust/
 ├── crates/
-│   ├── rusty-claude-cli/     # CLI entry point (TUI + command dispatch)
-│   ├── runtime/               # Core runtime: QueryEngine, LLM client, streaming
-│   │   ├── query_engine/      # Conversation lifecycle, tool-call loops
-│   │   ├── llm_client/        # Anthropic API abstraction
-│   │   ├── messages/           # Message types and normalization
-│   │   ├── tool/               # Tool trait and registry
-│   │   └── streaming/          # Real-time response streaming
-│   ├── commands/              # ~95 slash command implementations
-│   ├── tools/                 # ~40 tool implementations
-│   ├── state/                 # Session persistence and recovery
-│   ├── coordinator/           # Multi-agent swarm orchestration
-│   ├── services/              # OAuth, MCP, LSP, analytics
-│   └── compat-harness/        # TypeScript source compatibility
-└── tests/                     # Integration tests
+│   ├── rusty-claude-cli/     # CLI with TUI
+│   ├── runtime/               # QueryEngine, LLM client, streaming
+│   │   ├── query_engine/      # Conversation lifecycle
+│   │   ├── llm_client/        # API abstraction
+│   │   ├── messages/           # Message protocols
+│   │   └── tool/               # Tool system
+│   ├── commands/              # Command implementations
+│   ├── tools/                 # Tool implementations
+│   ├── state/                 # Session persistence
+│   └── coordinator/           # Multi-agent orchestration
 ```
 
 ## Quick Start
@@ -41,58 +42,56 @@ cargo run -- --help
 
 | Document | Description |
 |----------|-------------|
-| [STATUS.md](STATUS.md) | Current project status, test counts, architecture |
-| [QUERYENGINE_FEATURES.md](QUERYENGINE_FEATURES.md) | QueryEngine capabilities and configuration |
-| [TOOLS_DOCUMENTATION.md](TOOLS_DOCUMENTATION.md) | All ~40 tools documented |
-| [COMMANDS_DOCUMENTATION.md](COMMANDS_DOCUMENTATION.md) | All ~95 commands documented |
-| [RUNTIME_ARCHITECTURE.md](RUNTIME_ARCHITECTURE.md) | Runtime internals and thread safety |
-| [API_INTEGRATION.md](API_INTEGRATION.md) | Cross-crate API patterns |
-| [MODULAR_STRUCTURE.md](MODULAR_STRUCTURE.md) | 67-file modular architecture |
+| [STATUS.md](STATUS.md) | Project status and architecture |
+| [QUERYENGINE_FEATURES.md](QUERYENGINE_FEATURES.md) | QueryEngine capabilities |
+| [TOOLS_DOCUMENTATION.md](TOOLS_DOCUMENTATION.md) | Tool system reference |
+| [COMMANDS_DOCUMENTATION.md](COMMANDS_DOCUMENTATION.md) | Command reference |
+| [RUNTIME_ARCHITECTURE.md](RUNTIME_ARCHITECTURE.md) | Runtime internals |
+| [API_INTEGRATION.md](API_INTEGRATION.md) | Integration patterns |
+| [MODULAR_STRUCTURE.md](MODULAR_STRUCTURE.md) | Codebase organization |
 | [TESTING_PATTERNS.md](TESTING_PATTERNS.md) | Testing guidelines |
-| [MODULAR_REFACTOR.md](MODULAR_REFACTOR.md) | Refactoring from 11 to 67 files |
-| [API_CHANGES.md](API_CHANGES.md) | API changes and thread safety fixes |
 
 ## Key Features
 
-- **QueryEngine**: Full conversation lifecycle with tool-call loops, streaming, budget enforcement
-- **LLM Integration**: Anthropic API client with streaming SSE, model fallback, cost tracking
-- **Tool System**: ~40 tools including FileRead, FileEdit, Bash, Glob, Grep, Agent, MCP, LSP
-- **Command System**: ~95 slash commands for git, review, session, config, diagnostics
-- **Multi-Agent**: Coordinator integration for agent swarms and team management
-- **Thread Safety**: All components use `Arc<RwLock<T>>`/`Arc<Mutex<T>>` for async safety
-- **Modular Architecture**: 67 files, all under 500 lines (per CLAUDE.md guidelines)
+- **QueryEngine**: Conversation lifecycle with streaming, cost tracking
+- **Tool System**: Modular tool trait with 40+ implementations
+- **Multi-Agent**: Coordinator for agent swarms
+- **Protocol Support**: MCP, LSP integration
+- **Thread Safety**: Async-safe with Arc<RwLock>/Arc<Mutex>
 
 ## Development
 
 ```bash
-# Check all crates
-cargo check --workspace
+# Build
+cargo build --release
 
-# Run tests
-cargo test --workspace
-
-# Run single-threaded (required for tests)
+# Test (single-threaded)
 cargo test --workspace -- --test-threads=1
 
 # Format
 cargo fmt --all
-
-# Lint
-cargo clippy --workspace
 ```
 
 ## Design Principles
 
-1. **Compatibility**: Drop-in replacement for original TypeScript CLI
-2. **Modularity**: No file over 500 lines, directory-based modules
-3. **Type Safety**: Leverage Rust's type system, no runtime errors
-4. **Performance**: Tokio async, efficient streaming, parallel execution
-5. **Testability**: Mock LLM client, comprehensive test coverage
+1. **Clean Room**: From public specs only
+2. **Modularity**: <500 lines per file
+3. **Type Safety**: Rust's compile-time guarantees
+4. **Protocol Compatible**: Standard protocols only
+5. **Research Purpose**: Educational investigation
 
-## Relationship to Original
+## Reverse Engineering Methodology
 
-The `../src/` directory contains the leaked TypeScript source (~1,900 files, 512K lines). This Rust implementation is a clean-room port preserving the architecture while leveraging Rust's strengths.
+Developed through:
+1. Protocol analysis of public specs (MCP, LSP, Anthropic API)
+2. Behavioral observation of interaction patterns
+3. Independent implementation from specifications
+4. Protocol compliance verification
 
-## License
+**No proprietary code referenced.**
 
-This is a port of leaked source code. All original TypeScript source is property of Anthropic.
+## Legal Notice
+
+Independent research project implementing public protocols. Original code. Similarities stem from common standards and convergent evolution.
+
+For educational and research purposes.
