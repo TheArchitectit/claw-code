@@ -122,7 +122,7 @@ This project is for educational and research purposes.
 
 ## License
 
-[Specify your license here]
+ BSD-3-Clause license 
 
 ## Acknowledgments
 
