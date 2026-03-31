@@ -178,6 +178,46 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         },
+        ToolSpec {
+            name: "TodoWrite",
+            description: "Update the structured task list for the current session.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": { "type": "string" },
+                                "activeForm": { "type": "string" },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"]
+                                }
+                            },
+                            "required": ["content", "activeForm", "status"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["todos"],
+                "additionalProperties": false
+            }),
+        },
+        ToolSpec {
+            name: "Skill",
+            description: "Load a local skill definition and its instructions.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "skill": { "type": "string" },
+                    "args": { "type": "string" }
+                },
+                "required": ["skill"],
+                "additionalProperties": false
+            }),
+        },
     ]
 }
 
@@ -191,6 +231,8 @@ pub fn execute_tool(name: &str, input: &Value) -> Result<String, String> {
         "grep_search" => from_value::<GrepSearchInput>(input).and_then(run_grep_search),
         "WebFetch" => from_value::<WebFetchInput>(input).and_then(run_web_fetch),
         "WebSearch" => from_value::<WebSearchInput>(input).and_then(run_web_search),
+        "TodoWrite" => from_value::<TodoWriteInput>(input).and_then(run_todo_write),
+        "Skill" => from_value::<SkillInput>(input).and_then(run_skill),
         _ => Err(format!("unsupported tool: {name}")),
     }
 }
@@ -238,6 +280,14 @@ fn run_web_fetch(input: WebFetchInput) -> Result<String, String> {
 
 fn run_web_search(input: WebSearchInput) -> Result<String, String> {
     to_pretty_json(execute_web_search(&input)?)
+}
+
+fn run_todo_write(input: TodoWriteInput) -> Result<String, String> {
+    to_pretty_json(execute_todo_write(input)?)
+}
+
+fn run_skill(input: SkillInput) -> Result<String, String> {
+    to_pretty_json(execute_skill(input)?)
 }
 
 fn to_pretty_json<T: serde::Serialize>(value: T) -> Result<String, String> {
@@ -288,6 +338,33 @@ struct WebSearchInput {
     blocked_domains: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct TodoWriteInput {
+    todos: Vec<TodoItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+struct TodoItem {
+    content: String,
+    #[serde(rename = "activeForm")]
+    active_form: String,
+    status: TodoStatus,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillInput {
+    skill: String,
+    args: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct WebFetchOutput {
     bytes: usize,
@@ -306,6 +383,25 @@ struct WebSearchOutput {
     results: Vec<WebSearchResultItem>,
     #[serde(rename = "durationSeconds")]
     duration_seconds: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct TodoWriteOutput {
+    #[serde(rename = "oldTodos")]
+    old_todos: Vec<TodoItem>,
+    #[serde(rename = "newTodos")]
+    new_todos: Vec<TodoItem>,
+    #[serde(rename = "verificationNudgeNeeded")]
+    verification_nudge_needed: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct SkillOutput {
+    skill: String,
+    path: String,
+    args: Option<String>,
+    description: Option<String>,
+    prompt: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -672,6 +768,146 @@ fn dedupe_hits(hits: &mut Vec<SearchHit>) {
     hits.retain(|hit| seen.insert(hit.url.clone()));
 }
 
+fn execute_todo_write(input: TodoWriteInput) -> Result<TodoWriteOutput, String> {
+    validate_todos(&input.todos)?;
+    let store_path = todo_store_path()?;
+    let old_todos = if store_path.exists() {
+        serde_json::from_str::<Vec<TodoItem>>(
+            &std::fs::read_to_string(&store_path).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?
+    } else {
+        Vec::new()
+    };
+
+    let all_done = input
+        .todos
+        .iter()
+        .all(|todo| matches!(todo.status, TodoStatus::Completed));
+    let persisted = if all_done {
+        Vec::new()
+    } else {
+        input.todos.clone()
+    };
+
+    if let Some(parent) = store_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(
+        &store_path,
+        serde_json::to_string_pretty(&persisted).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+
+    let verification_nudge_needed = (all_done
+        && input.todos.len() >= 3
+        && !input
+            .todos
+            .iter()
+            .any(|todo| todo.content.to_lowercase().contains("verif")))
+    .then_some(true);
+
+    Ok(TodoWriteOutput {
+        old_todos,
+        new_todos: input.todos,
+        verification_nudge_needed,
+    })
+}
+
+fn execute_skill(input: SkillInput) -> Result<SkillOutput, String> {
+    let skill_path = resolve_skill_path(&input.skill)?;
+    let prompt = std::fs::read_to_string(&skill_path).map_err(|error| error.to_string())?;
+    let description = parse_skill_description(&prompt);
+
+    Ok(SkillOutput {
+        skill: input.skill,
+        path: skill_path.display().to_string(),
+        args: input.args,
+        description,
+        prompt,
+    })
+}
+
+fn validate_todos(todos: &[TodoItem]) -> Result<(), String> {
+    if todos.is_empty() {
+        return Err(String::from("todos must not be empty"));
+    }
+    let in_progress = todos
+        .iter()
+        .filter(|todo| matches!(todo.status, TodoStatus::InProgress))
+        .count();
+    if in_progress > 1 {
+        return Err(String::from(
+            "exactly zero or one todo items may be in_progress",
+        ));
+    }
+    if todos.iter().any(|todo| todo.content.trim().is_empty()) {
+        return Err(String::from("todo content must not be empty"));
+    }
+    if todos.iter().any(|todo| todo.active_form.trim().is_empty()) {
+        return Err(String::from("todo activeForm must not be empty"));
+    }
+    Ok(())
+}
+
+fn todo_store_path() -> Result<std::path::PathBuf, String> {
+    if let Ok(path) = std::env::var("CLAWD_TODO_STORE") {
+        return Ok(std::path::PathBuf::from(path));
+    }
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    Ok(cwd.join(".clawd-todos.json"))
+}
+
+fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
+    let requested = skill.trim().trim_start_matches('/');
+    if requested.is_empty() {
+        return Err(String::from("skill must not be empty"));
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(codex_home) = std::env::var("CODEX_HOME") {
+        candidates.push(std::path::PathBuf::from(codex_home).join("skills"));
+    }
+    candidates.push(std::path::PathBuf::from("/home/bellman/.codex/skills"));
+
+    for root in candidates {
+        let direct = root.join(requested).join("SKILL.md");
+        if direct.exists() {
+            return Ok(direct);
+        }
+
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let path = entry.path().join("SKILL.md");
+                if !path.exists() {
+                    continue;
+                }
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(requested)
+                {
+                    return Ok(path);
+                }
+            }
+        }
+    }
+
+    Err(format!("unknown skill: {requested}"))
+}
+
+fn parse_skill_description(contents: &str) -> Option<String> {
+    for line in contents.lines() {
+        if let Some(value) = line.strip_prefix("description:") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
@@ -771,6 +1007,79 @@ mod tests {
         assert_eq!(content.len(), 1);
         assert_eq!(content[0]["title"], "Reqwest docs");
         assert_eq!(content[0]["url"], "https://docs.rs/reqwest");
+    }
+
+    #[test]
+    fn todo_write_persists_and_returns_previous_state() {
+        let path = std::env::temp_dir().join(format!(
+            "clawd-tools-todos-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::env::set_var("CLAWD_TODO_STORE", &path);
+
+        let first = execute_tool(
+            "TodoWrite",
+            &json!({
+                "todos": [
+                    {"content": "Add tool", "activeForm": "Adding tool", "status": "in_progress"},
+                    {"content": "Run tests", "activeForm": "Running tests", "status": "pending"}
+                ]
+            }),
+        )
+        .expect("TodoWrite should succeed");
+        let first_output: serde_json::Value = serde_json::from_str(&first).expect("valid json");
+        assert_eq!(first_output["oldTodos"].as_array().expect("array").len(), 0);
+
+        let second = execute_tool(
+            "TodoWrite",
+            &json!({
+                "todos": [
+                    {"content": "Add tool", "activeForm": "Adding tool", "status": "completed"},
+                    {"content": "Run tests", "activeForm": "Running tests", "status": "completed"},
+                    {"content": "Verify", "activeForm": "Verifying", "status": "completed"}
+                ]
+            }),
+        )
+        .expect("TodoWrite should succeed");
+        std::env::remove_var("CLAWD_TODO_STORE");
+        let _ = std::fs::remove_file(path);
+
+        let second_output: serde_json::Value = serde_json::from_str(&second).expect("valid json");
+        assert_eq!(
+            second_output["oldTodos"].as_array().expect("array").len(),
+            2
+        );
+        assert_eq!(
+            second_output["newTodos"].as_array().expect("array").len(),
+            3
+        );
+        assert!(second_output["verificationNudgeNeeded"].is_null());
+    }
+
+    #[test]
+    fn skill_loads_local_skill_prompt() {
+        let result = execute_tool(
+            "Skill",
+            &json!({
+                "skill": "help",
+                "args": "overview"
+            }),
+        )
+        .expect("Skill should succeed");
+
+        let output: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(output["skill"], "help");
+        assert!(output["path"]
+            .as_str()
+            .expect("path")
+            .ends_with("/help/SKILL.md"));
+        assert!(output["prompt"]
+            .as_str()
+            .expect("prompt")
+            .contains("Guide on using oh-my-codex plugin"));
     }
 
     struct TestServer {
