@@ -23,6 +23,7 @@ pub struct ColorTheme {
     quote: Color,
     spinner_active: Color,
     spinner_done: Color,
+    spinner_failed: Color,
 }
 
 impl Default for ColorTheme {
@@ -36,6 +37,7 @@ impl Default for ColorTheme {
             quote: Color::DarkGrey,
             spinner_active: Color::Blue,
             spinner_done: Color::Green,
+            spinner_failed: Color::Red,
         }
     }
 }
@@ -87,6 +89,24 @@ impl Spinner {
             Clear(ClearType::CurrentLine),
             SetForegroundColor(theme.spinner_done),
             Print(format!("✔ {label}\n")),
+            ResetColor
+        )?;
+        out.flush()
+    }
+
+    pub fn fail(
+        &mut self,
+        label: &str,
+        theme: &ColorTheme,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
+        self.frame_index = 0;
+        execute!(
+            out,
+            MoveToColumn(0),
+            Clear(ClearType::CurrentLine),
+            SetForegroundColor(theme.spinner_failed),
+            Print(format!("✘ {label}\n")),
             ResetColor
         )?;
         out.flush()

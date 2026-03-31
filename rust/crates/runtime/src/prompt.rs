@@ -1,15 +1,89 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use crate::config::{ConfigError, ConfigLoader, RuntimeConfig};
+
+#[derive(Debug)]
+pub enum PromptBuildError {
+    Io(std::io::Error),
+    Config(ConfigError),
+}
+
+impl std::fmt::Display for PromptBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Config(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for PromptBuildError {}
+
+impl From<std::io::Error> for PromptBuildError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<ConfigError> for PromptBuildError {
+    fn from(value: ConfigError) -> Self {
+        Self::Config(value)
+    }
+}
+
 pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
 pub const FRONTIER_MODEL_NAME: &str = "Claude Opus 4.6";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextFile {
+    pub path: PathBuf,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectContext {
+    pub cwd: PathBuf,
+    pub current_date: String,
+    pub git_status: Option<String>,
+    pub instruction_files: Vec<ContextFile>,
+}
+
+impl ProjectContext {
+    pub fn discover(
+        cwd: impl Into<PathBuf>,
+        current_date: impl Into<String>,
+    ) -> std::io::Result<Self> {
+        let cwd = cwd.into();
+        let instruction_files = discover_instruction_files(&cwd)?;
+        Ok(Self {
+            cwd,
+            current_date: current_date.into(),
+            git_status: None,
+            instruction_files,
+        })
+    }
+
+    pub fn discover_with_git(
+        cwd: impl Into<PathBuf>,
+        current_date: impl Into<String>,
+    ) -> std::io::Result<Self> {
+        let mut context = Self::discover(cwd, current_date)?;
+        context.git_status = read_git_status(&context.cwd);
+        Ok(context)
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SystemPromptBuilder {
     output_style_name: Option<String>,
     output_style_prompt: Option<String>,
-    cwd: Option<String>,
     os_name: Option<String>,
     os_version: Option<String>,
-    date: Option<String>,
     append_sections: Vec<String>,
+    project_context: Option<ProjectContext>,
+    config: Option<RuntimeConfig>,
 }
 
 impl SystemPromptBuilder {
@@ -26,12 +100,6 @@ impl SystemPromptBuilder {
     }
 
     #[must_use]
-    pub fn with_cwd(mut self, cwd: impl Into<String>) -> Self {
-        self.cwd = Some(cwd.into());
-        self
-    }
-
-    #[must_use]
     pub fn with_os(mut self, os_name: impl Into<String>, os_version: impl Into<String>) -> Self {
         self.os_name = Some(os_name.into());
         self.os_version = Some(os_version.into());
@@ -39,8 +107,14 @@ impl SystemPromptBuilder {
     }
 
     #[must_use]
-    pub fn with_date(mut self, date: impl Into<String>) -> Self {
-        self.date = Some(date.into());
+    pub fn with_project_context(mut self, project_context: ProjectContext) -> Self {
+        self.project_context = Some(project_context);
+        self
+    }
+
+    #[must_use]
+    pub fn with_runtime_config(mut self, config: RuntimeConfig) -> Self {
+        self.config = Some(config);
         self
     }
 
@@ -62,6 +136,15 @@ impl SystemPromptBuilder {
         sections.push(get_actions_section());
         sections.push(SYSTEM_PROMPT_DYNAMIC_BOUNDARY.to_string());
         sections.push(self.environment_section());
+        if let Some(project_context) = &self.project_context {
+            sections.push(render_project_context(project_context));
+            if !project_context.instruction_files.is_empty() {
+                sections.push(render_instruction_files(&project_context.instruction_files));
+            }
+        }
+        if let Some(config) = &self.config {
+            sections.push(render_config_section(config));
+        }
         sections.extend(self.append_sections.iter().cloned());
         sections
     }
@@ -72,14 +155,19 @@ impl SystemPromptBuilder {
     }
 
     fn environment_section(&self) -> String {
+        let cwd = self.project_context.as_ref().map_or_else(
+            || "unknown".to_string(),
+            |context| context.cwd.display().to_string(),
+        );
+        let date = self.project_context.as_ref().map_or_else(
+            || "unknown".to_string(),
+            |context| context.current_date.clone(),
+        );
         let mut lines = vec!["# Environment context".to_string()];
         lines.extend(prepend_bullets(vec![
             format!("Model family: {FRONTIER_MODEL_NAME}"),
-            format!(
-                "Working directory: {}",
-                self.cwd.as_deref().unwrap_or("unknown")
-            ),
-            format!("Date: {}", self.date.as_deref().unwrap_or("unknown")),
+            format!("Working directory: {cwd}"),
+            format!("Date: {date}"),
             format!(
                 "Platform: {} {}",
                 self.os_name.as_deref().unwrap_or("unknown"),
@@ -93,6 +181,118 @@ impl SystemPromptBuilder {
 #[must_use]
 pub fn prepend_bullets(items: Vec<String>) -> Vec<String> {
     items.into_iter().map(|item| format!(" - {item}")).collect()
+}
+
+fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
+    let mut directories = Vec::new();
+    let mut cursor = Some(cwd);
+    while let Some(dir) = cursor {
+        directories.push(dir.to_path_buf());
+        cursor = dir.parent();
+    }
+    directories.reverse();
+
+    let mut files = Vec::new();
+    for dir in directories {
+        for candidate in [
+            dir.join("CLAUDE.md"),
+            dir.join("CLAUDE.local.md"),
+            dir.join(".claude").join("CLAUDE.md"),
+        ] {
+            push_context_file(&mut files, candidate)?;
+        }
+    }
+    Ok(files)
+}
+
+fn push_context_file(files: &mut Vec<ContextFile>, path: PathBuf) -> std::io::Result<()> {
+    match fs::read_to_string(&path) {
+        Ok(content) if !content.trim().is_empty() => {
+            files.push(ContextFile { path, content });
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn read_git_status(cwd: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["--no-optional-locks", "status", "--short", "--branch"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn render_project_context(project_context: &ProjectContext) -> String {
+    let mut lines = vec!["# Project context".to_string()];
+    lines.extend(prepend_bullets(vec![format!(
+        "Today's date is {}.",
+        project_context.current_date
+    )]));
+    if let Some(status) = &project_context.git_status {
+        lines.push(String::new());
+        lines.push("Git status snapshot:".to_string());
+        lines.push(status.clone());
+    }
+    lines.join("\n")
+}
+
+fn render_instruction_files(files: &[ContextFile]) -> String {
+    let mut sections = vec!["# Claude instructions".to_string()];
+    for file in files {
+        sections.push(format!("## {}", file.path.display()));
+        sections.push(file.content.trim().to_string());
+    }
+    sections.join("\n\n")
+}
+
+pub fn load_system_prompt(
+    cwd: impl Into<PathBuf>,
+    current_date: impl Into<String>,
+    os_name: impl Into<String>,
+    os_version: impl Into<String>,
+) -> Result<Vec<String>, PromptBuildError> {
+    let cwd = cwd.into();
+    let project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
+    let config = ConfigLoader::default_for(&cwd).load()?;
+    Ok(SystemPromptBuilder::new()
+        .with_os(os_name, os_version)
+        .with_project_context(project_context)
+        .with_runtime_config(config)
+        .build())
+}
+
+fn render_config_section(config: &RuntimeConfig) -> String {
+    let mut lines = vec!["# Runtime config".to_string()];
+    if config.loaded_entries().is_empty() {
+        lines.extend(prepend_bullets(vec![
+            "No Claude Code settings files loaded.".to_string(),
+        ]));
+        return lines.join("\n");
+    }
+
+    lines.extend(prepend_bullets(
+        config
+            .loaded_entries()
+            .iter()
+            .map(|entry| format!("Loaded {:?}: {}", entry.source, entry.path.display()))
+            .collect(),
+    ));
+    lines.push(String::new());
+    lines.push(config.as_json().render());
+    lines.join("\n")
 }
 
 fn get_simple_intro_section(has_output_style: bool) -> String {
@@ -148,22 +348,132 @@ fn get_actions_section() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SystemPromptBuilder, SYSTEM_PROMPT_DYNAMIC_BOUNDARY};
+    use super::{ProjectContext, SystemPromptBuilder, SYSTEM_PROMPT_DYNAMIC_BOUNDARY};
+    use crate::config::ConfigLoader;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir() -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("runtime-prompt-{nanos}"))
+    }
 
     #[test]
-    fn renders_claude_code_style_sections() {
+    fn discovers_instruction_files_from_ancestor_chain() {
+        let root = temp_dir();
+        let nested = root.join("apps").join("api");
+        fs::create_dir_all(nested.join(".claude")).expect("nested claude dir");
+        fs::write(root.join("CLAUDE.md"), "root instructions").expect("write root instructions");
+        fs::write(root.join("CLAUDE.local.md"), "local instructions")
+            .expect("write local instructions");
+        fs::create_dir_all(root.join("apps")).expect("apps dir");
+        fs::write(root.join("apps").join("CLAUDE.md"), "apps instructions")
+            .expect("write apps instructions");
+        fs::write(nested.join(".claude").join("CLAUDE.md"), "nested rules")
+            .expect("write nested rules");
+
+        let context = ProjectContext::discover(&nested, "2026-03-31").expect("context should load");
+        let contents = context
+            .instruction_files
+            .iter()
+            .map(|file| file.content.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            contents,
+            vec![
+                "root instructions",
+                "local instructions",
+                "apps instructions",
+                "nested rules"
+            ]
+        );
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn discover_with_git_includes_status_snapshot() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&root)
+            .status()
+            .expect("git init should run");
+        fs::write(root.join("CLAUDE.md"), "rules").expect("write instructions");
+        fs::write(root.join("tracked.txt"), "hello").expect("write tracked file");
+
+        let context =
+            ProjectContext::discover_with_git(&root, "2026-03-31").expect("context should load");
+
+        let status = context.git_status.expect("git status should be present");
+        assert!(status.contains("## No commits yet on") || status.contains("## "));
+        assert!(status.contains("?? CLAUDE.md"));
+        assert!(status.contains("?? tracked.txt"));
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn load_system_prompt_reads_claude_files_and_config() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claude")).expect("claude dir");
+        fs::write(root.join("CLAUDE.md"), "Project rules").expect("write instructions");
+        fs::write(
+            root.join(".claude").join("settings.json"),
+            r#"{"permissionMode":"acceptEdits"}"#,
+        )
+        .expect("write settings");
+
+        let previous = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(&root).expect("change cwd");
+        let prompt = super::load_system_prompt(&root, "2026-03-31", "linux", "6.8")
+            .expect("system prompt should load")
+            .join(
+                "
+
+",
+            );
+        std::env::set_current_dir(previous).expect("restore cwd");
+
+        assert!(prompt.contains("Project rules"));
+        assert!(prompt.contains("permissionMode"));
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn renders_claude_code_style_sections_with_project_context() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claude")).expect("claude dir");
+        fs::write(root.join("CLAUDE.md"), "Project rules").expect("write CLAUDE.md");
+        fs::write(
+            root.join(".claude").join("settings.json"),
+            r#"{"permissionMode":"acceptEdits"}"#,
+        )
+        .expect("write settings");
+
+        let project_context =
+            ProjectContext::discover(&root, "2026-03-31").expect("context should load");
+        let config = ConfigLoader::new(&root, root.join("missing-home"))
+            .load()
+            .expect("config should load");
         let prompt = SystemPromptBuilder::new()
             .with_output_style("Concise", "Prefer short answers.")
-            .with_cwd("/tmp/project")
             .with_os("linux", "6.8")
-            .with_date("2026-03-31")
-            .append_section("# Custom\nExtra")
+            .with_project_context(project_context)
+            .with_runtime_config(config)
             .render();
 
         assert!(prompt.contains("# System"));
-        assert!(prompt.contains("# Doing tasks"));
-        assert!(prompt.contains("# Executing actions with care"));
+        assert!(prompt.contains("# Project context"));
+        assert!(prompt.contains("# Claude instructions"));
+        assert!(prompt.contains("Project rules"));
+        assert!(prompt.contains("permissionMode"));
         assert!(prompt.contains(SYSTEM_PROMPT_DYNAMIC_BOUNDARY));
-        assert!(prompt.contains("Working directory: /tmp/project"));
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 }

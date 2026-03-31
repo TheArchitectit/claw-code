@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 
+use crate::compact::{
+    compact_session, estimate_session_tokens, CompactionConfig, CompactionResult,
+};
 use crate::permissions::{PermissionOutcome, PermissionPolicy, PermissionPrompter};
 use crate::session::{ContentBlock, ConversationMessage, Session};
+use crate::usage::{TokenUsage, UsageTracker};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiRequest {
@@ -18,6 +22,7 @@ pub enum AssistantEvent {
         name: String,
         input: String,
     },
+    Usage(TokenUsage),
     MessageStop,
 }
 
@@ -78,6 +83,7 @@ pub struct TurnSummary {
     pub assistant_messages: Vec<ConversationMessage>,
     pub tool_results: Vec<ConversationMessage>,
     pub iterations: usize,
+    pub usage: TokenUsage,
 }
 
 pub struct ConversationRuntime<C, T> {
@@ -87,6 +93,7 @@ pub struct ConversationRuntime<C, T> {
     permission_policy: PermissionPolicy,
     system_prompt: Vec<String>,
     max_iterations: usize,
+    usage_tracker: UsageTracker,
 }
 
 impl<C, T> ConversationRuntime<C, T>
@@ -102,6 +109,7 @@ where
         permission_policy: PermissionPolicy,
         system_prompt: Vec<String>,
     ) -> Self {
+        let usage_tracker = UsageTracker::from_session(&session);
         Self {
             session,
             api_client,
@@ -109,6 +117,7 @@ where
             permission_policy,
             system_prompt,
             max_iterations: 16,
+            usage_tracker,
         }
     }
 
@@ -144,7 +153,10 @@ where
                 messages: self.session.messages.clone(),
             };
             let events = self.api_client.stream(request)?;
-            let assistant_message = build_assistant_message(events)?;
+            let (assistant_message, usage) = build_assistant_message(events)?;
+            if let Some(usage) = usage {
+                self.usage_tracker.record(usage);
+            }
             let pending_tool_uses = assistant_message
                 .blocks
                 .iter()
@@ -201,7 +213,23 @@ where
             assistant_messages,
             tool_results,
             iterations,
+            usage: self.usage_tracker.cumulative_usage(),
         })
+    }
+
+    #[must_use]
+    pub fn compact(&self, config: CompactionConfig) -> CompactionResult {
+        compact_session(&self.session, config)
+    }
+
+    #[must_use]
+    pub fn estimated_tokens(&self) -> usize {
+        estimate_session_tokens(&self.session)
+    }
+
+    #[must_use]
+    pub fn usage(&self) -> &UsageTracker {
+        &self.usage_tracker
     }
 
     #[must_use]
@@ -217,10 +245,11 @@ where
 
 fn build_assistant_message(
     events: Vec<AssistantEvent>,
-) -> Result<ConversationMessage, RuntimeError> {
+) -> Result<(ConversationMessage, Option<TokenUsage>), RuntimeError> {
     let mut text = String::new();
     let mut blocks = Vec::new();
     let mut finished = false;
+    let mut usage = None;
 
     for event in events {
         match event {
@@ -229,6 +258,7 @@ fn build_assistant_message(
                 flush_text_block(&mut text, &mut blocks);
                 blocks.push(ContentBlock::ToolUse { id, name, input });
             }
+            AssistantEvent::Usage(value) => usage = Some(value),
             AssistantEvent::MessageStop => {
                 finished = true;
             }
@@ -246,7 +276,10 @@ fn build_assistant_message(
         return Err(RuntimeError::new("assistant stream produced no content"));
     }
 
-    Ok(ConversationMessage::assistant(blocks))
+    Ok((
+        ConversationMessage::assistant_with_usage(blocks, usage),
+        usage,
+    ))
 }
 
 fn flush_text_block(text: &mut String, blocks: &mut Vec<ContentBlock>) {
@@ -295,12 +328,15 @@ mod tests {
         ApiClient, ApiRequest, AssistantEvent, ConversationRuntime, RuntimeError,
         StaticToolExecutor,
     };
+    use crate::compact::CompactionConfig;
     use crate::permissions::{
         PermissionMode, PermissionPolicy, PermissionPromptDecision, PermissionPrompter,
         PermissionRequest,
     };
-    use crate::prompt::SystemPromptBuilder;
+    use crate::prompt::{ProjectContext, SystemPromptBuilder};
     use crate::session::{ContentBlock, MessageRole, Session};
+    use crate::usage::TokenUsage;
+    use std::path::PathBuf;
 
     struct ScriptedApiClient {
         call_count: usize,
@@ -322,6 +358,12 @@ mod tests {
                             name: "add".to_string(),
                             input: "2,2".to_string(),
                         },
+                        AssistantEvent::Usage(TokenUsage {
+                            input_tokens: 20,
+                            output_tokens: 6,
+                            cache_creation_input_tokens: 1,
+                            cache_read_input_tokens: 2,
+                        }),
                         AssistantEvent::MessageStop,
                     ])
                 }
@@ -333,6 +375,12 @@ mod tests {
                     assert_eq!(last_message.role, MessageRole::Tool);
                     Ok(vec![
                         AssistantEvent::TextDelta("The answer is 4.".to_string()),
+                        AssistantEvent::Usage(TokenUsage {
+                            input_tokens: 24,
+                            output_tokens: 4,
+                            cache_creation_input_tokens: 1,
+                            cache_read_input_tokens: 3,
+                        }),
                         AssistantEvent::MessageStop,
                     ])
                 }
@@ -351,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn runs_user_to_tool_to_result_loop_end_to_end() {
+    fn runs_user_to_tool_to_result_loop_end_to_end_and_tracks_usage() {
         let api_client = ScriptedApiClient { call_count: 0 };
         let tool_executor = StaticToolExecutor::new().register("add", |input| {
             let total = input
@@ -362,9 +410,13 @@ mod tests {
         });
         let permission_policy = PermissionPolicy::new(PermissionMode::Prompt);
         let system_prompt = SystemPromptBuilder::new()
-            .with_cwd("/tmp/project")
+            .with_project_context(ProjectContext {
+                cwd: PathBuf::from("/tmp/project"),
+                current_date: "2026-03-31".to_string(),
+                git_status: None,
+                instruction_files: Vec::new(),
+            })
             .with_os("linux", "6.8")
-            .with_date("2026-03-31")
             .build();
         let mut runtime = ConversationRuntime::new(
             Session::new(),
@@ -382,6 +434,7 @@ mod tests {
         assert_eq!(summary.assistant_messages.len(), 2);
         assert_eq!(summary.tool_results.len(), 1);
         assert_eq!(runtime.session().messages.len(), 4);
+        assert_eq!(summary.usage.output_tokens, 10);
         assert!(matches!(
             runtime.session().messages[1].blocks[1],
             ContentBlock::ToolUse { .. }
@@ -447,5 +500,84 @@ mod tests {
             &summary.tool_results[0].blocks[0],
             ContentBlock::ToolResult { is_error: true, output, .. } if output == "not now"
         ));
+    }
+
+    #[test]
+    fn reconstructs_usage_tracker_from_restored_session() {
+        struct SimpleApi;
+        impl ApiClient for SimpleApi {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                Ok(vec![
+                    AssistantEvent::TextDelta("done".to_string()),
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let mut session = Session::new();
+        session
+            .messages
+            .push(crate::session::ConversationMessage::assistant_with_usage(
+                vec![ContentBlock::Text {
+                    text: "earlier".to_string(),
+                }],
+                Some(TokenUsage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                    cache_creation_input_tokens: 2,
+                    cache_read_input_tokens: 1,
+                }),
+            ));
+
+        let runtime = ConversationRuntime::new(
+            session,
+            SimpleApi,
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::Allow),
+            vec!["system".to_string()],
+        );
+
+        assert_eq!(runtime.usage().turns(), 1);
+        assert_eq!(runtime.usage().cumulative_usage().total_tokens(), 21);
+    }
+
+    #[test]
+    fn compacts_session_after_turns() {
+        struct SimpleApi;
+        impl ApiClient for SimpleApi {
+            fn stream(
+                &mut self,
+                _request: ApiRequest,
+            ) -> Result<Vec<AssistantEvent>, RuntimeError> {
+                Ok(vec![
+                    AssistantEvent::TextDelta("done".to_string()),
+                    AssistantEvent::MessageStop,
+                ])
+            }
+        }
+
+        let mut runtime = ConversationRuntime::new(
+            Session::new(),
+            SimpleApi,
+            StaticToolExecutor::new(),
+            PermissionPolicy::new(PermissionMode::Allow),
+            vec!["system".to_string()],
+        );
+        runtime.run_turn("a", None).expect("turn a");
+        runtime.run_turn("b", None).expect("turn b");
+        runtime.run_turn("c", None).expect("turn c");
+
+        let result = runtime.compact(CompactionConfig {
+            preserve_recent_messages: 2,
+            max_estimated_tokens: 1,
+        });
+        assert!(result.summary.contains("Conversation summary"));
+        assert_eq!(
+            result.compacted_session.messages[0].role,
+            MessageRole::System
+        );
     }
 }

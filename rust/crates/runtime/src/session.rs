@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::json::{JsonError, JsonValue};
+use crate::usage::TokenUsage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageRole {
@@ -35,6 +36,7 @@ pub enum ContentBlock {
 pub struct ConversationMessage {
     pub role: MessageRole,
     pub blocks: Vec<ContentBlock>,
+    pub usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +147,7 @@ impl ConversationMessage {
         Self {
             role: MessageRole::User,
             blocks: vec![ContentBlock::Text { text: text.into() }],
+            usage: None,
         }
     }
 
@@ -153,6 +156,16 @@ impl ConversationMessage {
         Self {
             role: MessageRole::Assistant,
             blocks,
+            usage: None,
+        }
+    }
+
+    #[must_use]
+    pub fn assistant_with_usage(blocks: Vec<ContentBlock>, usage: Option<TokenUsage>) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            blocks,
+            usage,
         }
     }
 
@@ -171,6 +184,7 @@ impl ConversationMessage {
                 output: output.into(),
                 is_error,
             }],
+            usage: None,
         }
     }
 
@@ -193,6 +207,9 @@ impl ConversationMessage {
             "blocks".to_string(),
             JsonValue::Array(self.blocks.iter().map(ContentBlock::to_json).collect()),
         );
+        if let Some(usage) = self.usage {
+            object.insert("usage".to_string(), usage_to_json(usage));
+        }
         JsonValue::Object(object)
     }
 
@@ -222,7 +239,12 @@ impl ConversationMessage {
             .iter()
             .map(ContentBlock::from_json)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { role, blocks })
+        let usage = object.get("usage").map(usage_from_json).transpose()?;
+        Ok(Self {
+            role,
+            blocks,
+            usage,
+        })
     }
 }
 
@@ -302,6 +324,39 @@ impl ContentBlock {
     }
 }
 
+fn usage_to_json(usage: TokenUsage) -> JsonValue {
+    let mut object = BTreeMap::new();
+    object.insert(
+        "input_tokens".to_string(),
+        JsonValue::Number(i64::from(usage.input_tokens)),
+    );
+    object.insert(
+        "output_tokens".to_string(),
+        JsonValue::Number(i64::from(usage.output_tokens)),
+    );
+    object.insert(
+        "cache_creation_input_tokens".to_string(),
+        JsonValue::Number(i64::from(usage.cache_creation_input_tokens)),
+    );
+    object.insert(
+        "cache_read_input_tokens".to_string(),
+        JsonValue::Number(i64::from(usage.cache_read_input_tokens)),
+    );
+    JsonValue::Object(object)
+}
+
+fn usage_from_json(value: &JsonValue) -> Result<TokenUsage, SessionError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| SessionError::Format("usage must be an object".to_string()))?;
+    Ok(TokenUsage {
+        input_tokens: required_u32(object, "input_tokens")?,
+        output_tokens: required_u32(object, "output_tokens")?,
+        cache_creation_input_tokens: required_u32(object, "cache_creation_input_tokens")?,
+        cache_read_input_tokens: required_u32(object, "cache_read_input_tokens")?,
+    })
+}
+
 fn required_string(
     object: &BTreeMap<String, JsonValue>,
     key: &str,
@@ -313,9 +368,18 @@ fn required_string(
         .ok_or_else(|| SessionError::Format(format!("missing {key}")))
 }
 
+fn required_u32(object: &BTreeMap<String, JsonValue>, key: &str) -> Result<u32, SessionError> {
+    let value = object
+        .get(key)
+        .and_then(JsonValue::as_i64)
+        .ok_or_else(|| SessionError::Format(format!("missing {key}")))?;
+    u32::try_from(value).map_err(|_| SessionError::Format(format!("{key} out of range")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ContentBlock, ConversationMessage, MessageRole, Session};
+    use crate::usage::TokenUsage;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -325,16 +389,26 @@ mod tests {
         session
             .messages
             .push(ConversationMessage::user_text("hello"));
-        session.messages.push(ConversationMessage::assistant(vec![
-            ContentBlock::Text {
-                text: "thinking".to_string(),
-            },
-            ContentBlock::ToolUse {
-                id: "tool-1".to_string(),
-                name: "bash".to_string(),
-                input: "echo hi".to_string(),
-            },
-        ]));
+        session
+            .messages
+            .push(ConversationMessage::assistant_with_usage(
+                vec![
+                    ContentBlock::Text {
+                        text: "thinking".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "bash".to_string(),
+                        input: "echo hi".to_string(),
+                    },
+                ],
+                Some(TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 4,
+                    cache_creation_input_tokens: 1,
+                    cache_read_input_tokens: 2,
+                }),
+            ));
         session.messages.push(ConversationMessage::tool_result(
             "tool-1", "bash", "hi", false,
         ));
@@ -350,5 +424,9 @@ mod tests {
 
         assert_eq!(restored, session);
         assert_eq!(restored.messages[2].role, MessageRole::Tool);
+        assert_eq!(
+            restored.messages[1].usage.expect("usage").total_tokens(),
+            17
+        );
     }
 }

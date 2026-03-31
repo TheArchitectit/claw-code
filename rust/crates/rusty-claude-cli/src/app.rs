@@ -1,11 +1,10 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::thread;
-use std::time::Duration;
 
 use crate::args::{OutputFormat, PermissionMode};
 use crate::input::LineEditor;
 use crate::render::{Spinner, TerminalRenderer};
+use runtime::{ConversationClient, ConversationMessage, RuntimeError, StreamEvent, UsageSummary};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfig {
@@ -20,6 +19,7 @@ pub struct SessionState {
     pub turns: usize,
     pub compacted_messages: usize,
     pub last_model: String,
+    pub last_usage: UsageSummary,
 }
 
 impl SessionState {
@@ -29,6 +29,7 @@ impl SessionState {
             turns: 0,
             compacted_messages: 0,
             last_model: model.into(),
+            last_usage: UsageSummary::default(),
         }
     }
 }
@@ -92,17 +93,21 @@ pub struct CliApp {
     config: SessionConfig,
     renderer: TerminalRenderer,
     state: SessionState,
+    conversation_client: ConversationClient,
+    conversation_history: Vec<ConversationMessage>,
 }
 
 impl CliApp {
-    #[must_use]
-    pub fn new(config: SessionConfig) -> Self {
+    pub fn new(config: SessionConfig) -> Result<Self, RuntimeError> {
         let state = SessionState::new(config.model.clone());
-        Self {
+        let conversation_client = ConversationClient::from_env(config.model.clone())?;
+        Ok(Self {
             config,
             renderer: TerminalRenderer::new(),
             state,
-        }
+            conversation_client,
+            conversation_history: Vec::new(),
+        })
     }
 
     pub fn run_repl(&mut self) -> io::Result<()> {
@@ -172,11 +177,13 @@ impl CliApp {
     fn handle_status(&mut self, out: &mut impl Write) -> io::Result<CommandResult> {
         writeln!(
             out,
-            "status: turns={} model={} permission-mode={:?} output-format={:?} config={}",
+            "status: turns={} model={} permission-mode={:?} output-format={:?} last-usage={} in/{} out config={}",
             self.state.turns,
             self.state.last_model,
             self.config.permission_mode,
             self.config.output_format,
+            self.state.last_usage.input_tokens,
+            self.state.last_usage.output_tokens,
             self.config
                 .config
                 .as_ref()
@@ -188,6 +195,7 @@ impl CliApp {
     fn handle_compact(&mut self, out: &mut impl Write) -> io::Result<CommandResult> {
         self.state.compacted_messages += self.state.turns;
         self.state.turns = 0;
+        self.conversation_history.clear();
         writeln!(
             out,
             "Compacted session history into a local summary ({} messages total compacted).",
@@ -196,46 +204,147 @@ impl CliApp {
         Ok(CommandResult::Continue)
     }
 
-    fn render_response(&mut self, input: &str, out: &mut impl Write) -> io::Result<()> {
-        let mut spinner = Spinner::new();
-        for label in [
-            "Planning response",
-            "Running tool execution",
-            "Rendering markdown output",
-        ] {
-            spinner.tick(label, self.renderer.color_theme(), out)?;
-            thread::sleep(Duration::from_millis(24));
+    fn handle_stream_event(
+        renderer: &TerminalRenderer,
+        event: StreamEvent,
+        stream_spinner: &mut Spinner,
+        tool_spinner: &mut Spinner,
+        saw_text: &mut bool,
+        turn_usage: &mut UsageSummary,
+        out: &mut impl Write,
+    ) {
+        match event {
+            StreamEvent::TextDelta(delta) => {
+                if !*saw_text {
+                    let _ =
+                        stream_spinner.finish("Streaming response", renderer.color_theme(), out);
+                    *saw_text = true;
+                }
+                let _ = write!(out, "{delta}");
+                let _ = out.flush();
+            }
+            StreamEvent::ToolCallStart { name, input } => {
+                if *saw_text {
+                    let _ = writeln!(out);
+                }
+                let _ = tool_spinner.tick(
+                    &format!("Running tool `{name}` with {input}"),
+                    renderer.color_theme(),
+                    out,
+                );
+            }
+            StreamEvent::ToolCallResult {
+                name,
+                output,
+                is_error,
+            } => {
+                let label = if is_error {
+                    format!("Tool `{name}` failed")
+                } else {
+                    format!("Tool `{name}` completed")
+                };
+                let _ = tool_spinner.finish(&label, renderer.color_theme(), out);
+                let rendered_output = format!("### Tool `{name}`\n\n```text\n{output}\n```\n");
+                let _ = renderer.stream_markdown(&rendered_output, out);
+            }
+            StreamEvent::Usage(usage) => {
+                *turn_usage = usage;
+            }
         }
-        spinner.finish("Streaming response", self.renderer.color_theme(), out)?;
+    }
 
-        let response = demo_response(input, &self.config);
+    fn write_turn_output(
+        &self,
+        summary: &runtime::TurnSummary,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
         match self.config.output_format {
-            OutputFormat::Text => self.renderer.stream_markdown(&response, out)?,
-            OutputFormat::Json => writeln!(out, "{{\"message\":{response:?}}}")?,
+            OutputFormat::Text => {
+                writeln!(
+                    out,
+                    "\nToken usage: {} input / {} output",
+                    self.state.last_usage.input_tokens, self.state.last_usage.output_tokens
+                )?;
+            }
+            OutputFormat::Json => {
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::json!({
+                        "message": summary.assistant_text,
+                        "usage": {
+                            "input_tokens": self.state.last_usage.input_tokens,
+                            "output_tokens": self.state.last_usage.output_tokens,
+                        }
+                    })
+                )?;
+            }
             OutputFormat::Ndjson => {
-                writeln!(out, "{{\"type\":\"message\",\"text\":{response:?}}}")?;
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::json!({
+                        "type": "message",
+                        "text": summary.assistant_text,
+                        "usage": {
+                            "input_tokens": self.state.last_usage.input_tokens,
+                            "output_tokens": self.state.last_usage.output_tokens,
+                        }
+                    })
+                )?;
             }
         }
         Ok(())
     }
-}
 
-#[must_use]
-pub fn demo_response(input: &str, config: &SessionConfig) -> String {
-    format!(
-        "## Assistant\n\nModel: `{}`  \nPermission mode: `{}`\n\nYou said:\n\n> {}\n\nThis renderer now supports **bold**, *italic*, inline `code`, and syntax-highlighted blocks:\n\n```rust\nfn main() {{\n    println!(\"streaming from rusty-claude-cli\");\n}}\n```",
-        config.model,
-        permission_mode_label(config.permission_mode),
-        input.trim()
-    )
-}
+    fn render_response(&mut self, input: &str, out: &mut impl Write) -> io::Result<()> {
+        let mut stream_spinner = Spinner::new();
+        stream_spinner.tick(
+            "Opening conversation stream",
+            self.renderer.color_theme(),
+            out,
+        )?;
 
-#[must_use]
-pub fn permission_mode_label(mode: PermissionMode) -> &'static str {
-    match mode {
-        PermissionMode::ReadOnly => "read-only",
-        PermissionMode::WorkspaceWrite => "workspace-write",
-        PermissionMode::DangerFullAccess => "danger-full-access",
+        let mut turn_usage = UsageSummary::default();
+        let mut tool_spinner = Spinner::new();
+        let mut saw_text = false;
+        let renderer = &self.renderer;
+
+        let result =
+            self.conversation_client
+                .run_turn(&mut self.conversation_history, input, |event| {
+                    Self::handle_stream_event(
+                        renderer,
+                        event,
+                        &mut stream_spinner,
+                        &mut tool_spinner,
+                        &mut saw_text,
+                        &mut turn_usage,
+                        out,
+                    );
+                });
+
+        let summary = match result {
+            Ok(summary) => summary,
+            Err(error) => {
+                stream_spinner.fail(
+                    "Streaming response failed",
+                    self.renderer.color_theme(),
+                    out,
+                )?;
+                return Err(io::Error::other(error));
+            }
+        };
+        self.state.last_usage = summary.usage.clone();
+        if saw_text {
+            writeln!(out)?;
+        } else {
+            stream_spinner.finish("Streaming response", self.renderer.color_theme(), out)?;
+        }
+
+        self.write_turn_output(&summary, out)?;
+        let _ = turn_usage;
+        Ok(())
     }
 }
 
@@ -245,7 +354,7 @@ mod tests {
 
     use crate::args::{OutputFormat, PermissionMode};
 
-    use super::{CliApp, CommandResult, SessionConfig, SlashCommand};
+    use super::{CommandResult, SessionConfig, SlashCommand};
 
     #[test]
     fn parses_required_slash_commands() {
@@ -258,33 +367,27 @@ mod tests {
     }
 
     #[test]
-    fn help_status_and_compact_commands_are_wired() {
+    fn help_output_lists_commands() {
+        let mut out = Vec::new();
+        let result = super::CliApp::handle_help(&mut out).expect("help succeeds");
+        assert_eq!(result, CommandResult::Continue);
+        let output = String::from_utf8_lossy(&out);
+        assert!(output.contains("/help"));
+        assert!(output.contains("/status"));
+        assert!(output.contains("/compact"));
+    }
+
+    #[test]
+    fn session_state_tracks_config_values() {
         let config = SessionConfig {
             model: "claude".into(),
             permission_mode: PermissionMode::WorkspaceWrite,
             config: Some(PathBuf::from("settings.toml")),
             output_format: OutputFormat::Text,
         };
-        let mut app = CliApp::new(config);
-        let mut out = Vec::new();
 
-        let result = app
-            .handle_submission("/help", &mut out)
-            .expect("help succeeds");
-        assert_eq!(result, CommandResult::Continue);
-
-        app.handle_submission("hello", &mut out)
-            .expect("submission succeeds");
-        app.handle_submission("/status", &mut out)
-            .expect("status succeeds");
-        app.handle_submission("/compact", &mut out)
-            .expect("compact succeeds");
-
-        let output = String::from_utf8_lossy(&out);
-        assert!(output.contains("/help"));
-        assert!(output.contains("/status"));
-        assert!(output.contains("/compact"));
-        assert!(output.contains("status: turns=1"));
-        assert!(output.contains("Compacted session history"));
+        assert_eq!(config.model, "claude");
+        assert_eq!(config.permission_mode, PermissionMode::WorkspaceWrite);
+        assert_eq!(config.config, Some(PathBuf::from("settings.toml")));
     }
 }

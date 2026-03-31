@@ -1,5 +1,6 @@
 use std::env::VarError;
 use std::fmt::{Display, Formatter};
+use std::time::Duration;
 
 #[derive(Debug)]
 pub enum ApiError {
@@ -8,11 +9,39 @@ pub enum ApiError {
     Http(reqwest::Error),
     Io(std::io::Error),
     Json(serde_json::Error),
-    UnexpectedStatus {
+    Api {
         status: reqwest::StatusCode,
+        error_type: Option<String>,
+        message: Option<String>,
         body: String,
+        retryable: bool,
+    },
+    RetriesExhausted {
+        attempts: u32,
+        last_error: Box<ApiError>,
     },
     InvalidSseFrame(&'static str),
+    BackoffOverflow {
+        attempt: u32,
+        base_delay: Duration,
+    },
+}
+
+impl ApiError {
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::Http(error) => error.is_connect() || error.is_timeout() || error.is_request(),
+            Self::Api { retryable, .. } => *retryable,
+            Self::RetriesExhausted { last_error, .. } => last_error.is_retryable(),
+            Self::MissingApiKey
+            | Self::InvalidApiKeyEnv(_)
+            | Self::Io(_)
+            | Self::Json(_)
+            | Self::InvalidSseFrame(_)
+            | Self::BackoffOverflow { .. } => false,
+        }
+    }
 }
 
 impl Display for ApiError {
@@ -30,10 +59,36 @@ impl Display for ApiError {
             Self::Http(error) => write!(f, "http error: {error}"),
             Self::Io(error) => write!(f, "io error: {error}"),
             Self::Json(error) => write!(f, "json error: {error}"),
-            Self::UnexpectedStatus { status, body } => {
-                write!(f, "anthropic api returned {status}: {body}")
-            }
+            Self::Api {
+                status,
+                error_type,
+                message,
+                body,
+                ..
+            } => match (error_type, message) {
+                (Some(error_type), Some(message)) => {
+                    write!(
+                        f,
+                        "anthropic api returned {status} ({error_type}): {message}"
+                    )
+                }
+                _ => write!(f, "anthropic api returned {status}: {body}"),
+            },
+            Self::RetriesExhausted {
+                attempts,
+                last_error,
+            } => write!(
+                f,
+                "anthropic api failed after {attempts} attempts: {last_error}"
+            ),
             Self::InvalidSseFrame(message) => write!(f, "invalid sse frame: {message}"),
+            Self::BackoffOverflow {
+                attempt,
+                base_delay,
+            } => write!(
+                f,
+                "retry backoff overflowed on attempt {attempt} with base delay {base_delay:?}"
+            ),
         }
     }
 }

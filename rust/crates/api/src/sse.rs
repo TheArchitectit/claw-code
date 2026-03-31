@@ -103,7 +103,7 @@ pub fn parse_frame(frame: &str) -> Result<Option<StreamEvent>, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::{parse_frame, SseParser};
-    use crate::types::{ContentBlockDelta, OutputContentBlock, StreamEvent};
+    use crate::types::{ContentBlockDelta, MessageDelta, OutputContentBlock, StreamEvent, Usage};
 
     #[test]
     fn parses_single_frame() {
@@ -158,6 +158,8 @@ mod tests {
             ": keepalive\n",
             "event: ping\n",
             "data: {\"type\":\"ping\"}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}\n\n",
             "event: message_stop\n",
             "data: {\"type\":\"message_stop\"}\n\n",
             "data: [DONE]\n\n"
@@ -168,7 +170,19 @@ mod tests {
             .expect("parser should succeed");
         assert_eq!(
             events,
-            vec![StreamEvent::MessageStop(crate::types::MessageStopEvent {})]
+            vec![
+                StreamEvent::MessageDelta(crate::types::MessageDeltaEvent {
+                    delta: MessageDelta {
+                        stop_reason: Some("tool_use".to_string()),
+                        stop_sequence: None,
+                    },
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 2,
+                    },
+                }),
+                StreamEvent::MessageStop(crate::types::MessageStopEvent {}),
+            ]
         );
     }
 
