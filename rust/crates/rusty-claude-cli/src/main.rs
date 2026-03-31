@@ -269,6 +269,28 @@ struct StatusUsage {
     estimated_tokens: usize,
 }
 
+fn format_model_report(model: &str, message_count: usize, turns: u32) -> String {
+    format!(
+        "Model
+  Current model    {model}
+  Session messages {message_count}
+  Session turns    {turns}
+
+Usage
+  Inspect current model with /model
+  Switch models with /model <name>"
+    )
+}
+
+fn format_model_switch_report(previous: &str, next: &str, message_count: usize) -> String {
+    format!(
+        "Model updated
+  Previous         {previous}
+  Current          {next}
+  Preserved msgs   {message_count}"
+    )
+}
+
 fn run_resume_command(
     session_path: &Path,
     session: &Session,
@@ -489,19 +511,38 @@ impl LiveCli {
 
     fn set_model(&mut self, model: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
         let Some(model) = model else {
-            println!("Current model: {}", self.model);
+            println!(
+                "{}",
+                format_model_report(
+                    &self.model,
+                    self.runtime.session().messages.len(),
+                    self.runtime.usage().turns(),
+                )
+            );
             return Ok(());
         };
 
         if model == self.model {
-            println!("Model already set to {model}.");
+            println!(
+                "{}",
+                format_model_report(
+                    &self.model,
+                    self.runtime.session().messages.len(),
+                    self.runtime.usage().turns(),
+                )
+            );
             return Ok(());
         }
 
+        let previous = self.model.clone();
         let session = self.runtime.session().clone();
+        let message_count = session.messages.len();
         self.runtime = build_runtime(session, model.clone(), self.system_prompt.clone(), true)?;
         self.model.clone_from(&model);
-        println!("Switched model to {model}.");
+        println!(
+            "{}",
+            format_model_switch_report(&previous, &model, message_count)
+        );
         Ok(())
     }
 
@@ -1193,9 +1234,10 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_status_report, normalize_permission_mode, parse_args, render_init_claude_md,
-        render_repl_help, resume_supported_slash_commands, status_context, CliAction, SlashCommand,
-        StatusUsage, DEFAULT_MODEL,
+        format_model_report, format_model_switch_report, format_status_report,
+        normalize_permission_mode, parse_args, render_init_claude_md, render_repl_help,
+        resume_supported_slash_commands, status_context, CliAction, SlashCommand, StatusUsage,
+        DEFAULT_MODEL,
     };
     use runtime::{ContentBlock, ConversationMessage, MessageRole};
     use std::path::{Path, PathBuf};
@@ -1308,6 +1350,24 @@ mod tests {
             names,
             vec!["help", "status", "compact", "clear", "cost", "config", "memory", "init",]
         );
+    }
+
+    #[test]
+    fn model_report_uses_sectioned_layout() {
+        let report = format_model_report("claude-sonnet", 12, 4);
+        assert!(report.contains("Model"));
+        assert!(report.contains("Current model    claude-sonnet"));
+        assert!(report.contains("Session messages 12"));
+        assert!(report.contains("Switch models with /model <name>"));
+    }
+
+    #[test]
+    fn model_switch_report_preserves_context_summary() {
+        let report = format_model_switch_report("claude-sonnet", "claude-opus", 9);
+        assert!(report.contains("Model updated"));
+        assert!(report.contains("Previous         claude-sonnet"));
+        assert!(report.contains("Current          claude-opus"));
+        assert!(report.contains("Preserved msgs   9"));
     }
 
     #[test]
