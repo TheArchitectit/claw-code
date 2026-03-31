@@ -87,6 +87,119 @@ pub struct McpInitializeServerInfo {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpListToolsParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpTool {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "inputSchema", skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<JsonValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<JsonValue>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpListToolsResult {
+    pub tools: Vec<McpTool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolCallParams {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<JsonValue>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpToolCallContent {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(flatten)]
+    pub data: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolCallResult {
+    #[serde(default)]
+    pub content: Vec<McpToolCallContent>,
+    #[serde(default)]
+    pub structured_content: Option<JsonValue>,
+    #[serde(default)]
+    pub is_error: Option<bool>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpListResourcesParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpResource {
+    pub uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<JsonValue>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpListResourcesResult {
+    pub resources: Vec<McpResource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpReadResourceParams {
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpResourceContents {
+    pub uri: String,
+    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blob: Option<String>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpReadResourceResult {
+    pub contents: Vec<McpResourceContents>,
+}
+
 #[derive(Debug)]
 pub struct McpStdioProcess {
     child: Child,
@@ -214,14 +327,55 @@ impl McpStdioProcess {
         self.read_jsonrpc_message().await
     }
 
+    pub async fn request<TParams: Serialize, TResult: DeserializeOwned>(
+        &mut self,
+        id: JsonRpcId,
+        method: impl Into<String>,
+        params: Option<TParams>,
+    ) -> io::Result<JsonRpcResponse<TResult>> {
+        let request = JsonRpcRequest::new(id, method, params);
+        self.send_request(&request).await?;
+        self.read_response().await
+    }
+
     pub async fn initialize(
         &mut self,
         id: JsonRpcId,
         params: McpInitializeParams,
     ) -> io::Result<JsonRpcResponse<McpInitializeResult>> {
-        let request = JsonRpcRequest::new(id, "initialize", Some(params));
-        self.send_request(&request).await?;
-        self.read_response().await
+        self.request(id, "initialize", Some(params)).await
+    }
+
+    pub async fn list_tools(
+        &mut self,
+        id: JsonRpcId,
+        params: Option<McpListToolsParams>,
+    ) -> io::Result<JsonRpcResponse<McpListToolsResult>> {
+        self.request(id, "tools/list", params).await
+    }
+
+    pub async fn call_tool(
+        &mut self,
+        id: JsonRpcId,
+        params: McpToolCallParams,
+    ) -> io::Result<JsonRpcResponse<McpToolCallResult>> {
+        self.request(id, "tools/call", Some(params)).await
+    }
+
+    pub async fn list_resources(
+        &mut self,
+        id: JsonRpcId,
+        params: Option<McpListResourcesParams>,
+    ) -> io::Result<JsonRpcResponse<McpListResourcesResult>> {
+        self.request(id, "resources/list", params).await
+    }
+
+    pub async fn read_resource(
+        &mut self,
+        id: JsonRpcId,
+        params: McpReadResourceParams,
+    ) -> io::Result<JsonRpcResponse<McpReadResourceResult>> {
+        self.request(id, "resources/read", Some(params)).await
     }
 
     pub async fn terminate(&mut self) -> io::Result<()> {
@@ -277,8 +431,10 @@ mod tests {
     use crate::mcp_client::McpClientBootstrap;
 
     use super::{
-        spawn_mcp_stdio_process, JsonRpcId, JsonRpcRequest, McpInitializeClientInfo,
-        McpInitializeParams, McpInitializeResult, McpInitializeServerInfo, McpStdioProcess,
+        spawn_mcp_stdio_process, JsonRpcId, JsonRpcRequest, JsonRpcResponse,
+        McpInitializeClientInfo, McpInitializeParams, McpInitializeResult, McpInitializeServerInfo,
+        McpListToolsResult, McpReadResourceParams, McpReadResourceResult, McpStdioProcess, McpTool,
+        McpToolCallParams,
     };
 
     fn temp_dir() -> PathBuf {
@@ -346,16 +502,155 @@ mod tests {
         script_path
     }
 
+    #[allow(clippy::too_many_lines)]
+    fn write_mcp_server_script() -> PathBuf {
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("temp dir");
+        let script_path = root.join("fake-mcp-server.py");
+        let script = [
+            "#!/usr/bin/env python3",
+            "import json, sys",
+            "",
+            "def read_message():",
+            "    header = b''",
+            r"    while not header.endswith(b'\r\n\r\n'):",
+            "        chunk = sys.stdin.buffer.read(1)",
+            "        if not chunk:",
+            "            return None",
+            "        header += chunk",
+            "    length = 0",
+            r"    for line in header.decode().split('\r\n'):",
+            r"        if line.lower().startswith('content-length:'):",
+            r"            length = int(line.split(':', 1)[1].strip())",
+            "    payload = sys.stdin.buffer.read(length)",
+            "    return json.loads(payload.decode())",
+            "",
+            "def send_message(message):",
+            "    payload = json.dumps(message).encode()",
+            r"    sys.stdout.buffer.write(f'Content-Length: {len(payload)}\r\n\r\n'.encode() + payload)",
+            "    sys.stdout.buffer.flush()",
+            "",
+            "while True:",
+            "    request = read_message()",
+            "    if request is None:",
+            "        break",
+            "    method = request['method']",
+            "    if method == 'initialize':",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'protocolVersion': request['params']['protocolVersion'],",
+            "                'capabilities': {'tools': {}, 'resources': {}},",
+            "                'serverInfo': {'name': 'fake-mcp', 'version': '0.2.0'}",
+            "            }",
+            "        })",
+            "    elif method == 'tools/list':",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'tools': [",
+            "                    {",
+            "                        'name': 'echo',",
+            "                        'description': 'Echoes text',",
+            "                        'inputSchema': {",
+            "                            'type': 'object',",
+            "                            'properties': {'text': {'type': 'string'}},",
+            "                            'required': ['text']",
+            "                        }",
+            "                    }",
+            "                ]",
+            "            }",
+            "        })",
+            "    elif method == 'tools/call':",
+            "        args = request['params'].get('arguments') or {}",
+            "        if request['params']['name'] == 'fail':",
+            "            send_message({",
+            "                'jsonrpc': '2.0',",
+            "                'id': request['id'],",
+            "                'error': {'code': -32001, 'message': 'tool failed'},",
+            "            })",
+            "        else:",
+            "            text = args.get('text', '')",
+            "            send_message({",
+            "                'jsonrpc': '2.0',",
+            "                'id': request['id'],",
+            "                'result': {",
+            "                    'content': [{'type': 'text', 'text': f'echo:{text}'}],",
+            "                    'structuredContent': {'echoed': text},",
+            "                    'isError': False",
+            "                }",
+            "            })",
+            "    elif method == 'resources/list':",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'resources': [",
+            "                    {",
+            "                        'uri': 'file://guide.txt',",
+            "                        'name': 'guide',",
+            "                        'description': 'Guide text',",
+            "                        'mimeType': 'text/plain'",
+            "                    }",
+            "                ]",
+            "            }",
+            "        })",
+            "    elif method == 'resources/read':",
+            "        uri = request['params']['uri']",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'result': {",
+            "                'contents': [",
+            "                    {",
+            "                        'uri': uri,",
+            "                        'mimeType': 'text/plain',",
+            "                        'text': f'contents for {uri}'",
+            "                    }",
+            "                ]",
+            "            }",
+            "        })",
+            "    else:",
+            "        send_message({",
+            "            'jsonrpc': '2.0',",
+            "            'id': request['id'],",
+            "            'error': {'code': -32601, 'message': f'unknown method: {method}'},",
+            "        })",
+            "",
+        ]
+        .join("\n");
+        fs::write(&script_path, script).expect("write script");
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod");
+        script_path
+    }
+
     fn sample_bootstrap(script_path: &Path) -> McpClientBootstrap {
         let config = ScopedMcpServerConfig {
             scope: ConfigSource::Local,
             config: McpServerConfig::Stdio(McpStdioServerConfig {
-                command: script_path.to_string_lossy().into_owned(),
-                args: Vec::new(),
+                command: "/bin/sh".to_string(),
+                args: vec![script_path.to_string_lossy().into_owned()],
                 env: BTreeMap::from([("MCP_TEST_TOKEN".to_string(), "secret-value".to_string())]),
             }),
         };
         McpClientBootstrap::from_scoped_config("stdio server", &config)
+    }
+
+    fn script_transport(script_path: &Path) -> crate::mcp_client::McpStdioTransport {
+        crate::mcp_client::McpStdioTransport {
+            command: "python3".to_string(),
+            args: vec![script_path.to_string_lossy().into_owned()],
+            env: BTreeMap::new(),
+        }
+    }
+
+    fn cleanup_script(script_path: &Path) {
+        fs::remove_file(script_path).expect("cleanup script");
+        fs::remove_dir_all(script_path.parent().expect("script parent")).expect("cleanup dir");
     }
 
     #[test]
@@ -383,8 +678,7 @@ mod tests {
             let status = process.wait().await.expect("wait for exit");
             assert!(status.success());
 
-            fs::remove_file(&script_path).expect("cleanup script");
-            fs::remove_dir_all(script_path.parent().expect("script parent")).expect("cleanup dir");
+            cleanup_script(&script_path);
         });
     }
 
@@ -409,11 +703,7 @@ mod tests {
             .expect("runtime");
         runtime.block_on(async {
             let script_path = write_jsonrpc_script();
-            let transport = crate::mcp_client::McpStdioTransport {
-                command: "python3".to_string(),
-                args: vec![script_path.to_string_lossy().into_owned()],
-                env: BTreeMap::new(),
-            };
+            let transport = script_transport(&script_path);
             let mut process = McpStdioProcess::spawn(&transport).expect("spawn transport directly");
 
             let response = process
@@ -448,8 +738,7 @@ mod tests {
             let status = process.wait().await.expect("wait for exit");
             assert!(status.success());
 
-            fs::remove_file(&script_path).expect("cleanup script");
-            fs::remove_dir_all(script_path.parent().expect("script parent")).expect("cleanup dir");
+            cleanup_script(&script_path);
         });
     }
 
@@ -461,11 +750,7 @@ mod tests {
             .expect("runtime");
         runtime.block_on(async {
             let script_path = write_jsonrpc_script();
-            let transport = crate::mcp_client::McpStdioTransport {
-                command: "python3".to_string(),
-                args: vec![script_path.to_string_lossy().into_owned()],
-                env: BTreeMap::new(),
-            };
+            let transport = script_transport(&script_path);
             let mut process = McpStdioProcess::spawn(&transport).expect("spawn transport directly");
             let request = JsonRpcRequest::new(
                 JsonRpcId::Number(7),
@@ -478,7 +763,7 @@ mod tests {
             );
 
             process.send_request(&request).await.expect("send request");
-            let response: super::JsonRpcResponse<serde_json::Value> =
+            let response: JsonRpcResponse<serde_json::Value> =
                 process.read_response().await.expect("read response");
 
             assert_eq!(response.id, JsonRpcId::Number(7));
@@ -487,8 +772,7 @@ mod tests {
             let status = process.wait().await.expect("wait for exit");
             assert!(status.success());
 
-            fs::remove_file(&script_path).expect("cleanup script");
-            fs::remove_dir_all(script_path.parent().expect("script parent")).expect("cleanup dir");
+            cleanup_script(&script_path);
         });
     }
 
@@ -501,8 +785,8 @@ mod tests {
         runtime.block_on(async {
             let script_path = write_echo_script();
             let transport = crate::mcp_client::McpStdioTransport {
-                command: script_path.to_string_lossy().into_owned(),
-                args: Vec::new(),
+                command: "/bin/sh".to_string(),
+                args: vec![script_path.to_string_lossy().into_owned()],
                 env: BTreeMap::from([("MCP_TEST_TOKEN".to_string(), "direct-secret".to_string())]),
             };
             let mut process = McpStdioProcess::spawn(&transport).expect("spawn transport directly");
@@ -511,8 +795,144 @@ mod tests {
             process.terminate().await.expect("terminate child");
             let _ = process.wait().await.expect("wait after kill");
 
-            fs::remove_file(&script_path).expect("cleanup script");
-            fs::remove_dir_all(script_path.parent().expect("script parent")).expect("cleanup dir");
+            cleanup_script(&script_path);
+        });
+    }
+
+    #[test]
+    fn lists_tools_calls_tool_and_reads_resources_over_jsonrpc() {
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let script_path = write_mcp_server_script();
+            let transport = script_transport(&script_path);
+            let mut process = McpStdioProcess::spawn(&transport).expect("spawn fake mcp server");
+
+            let tools = process
+                .list_tools(JsonRpcId::Number(2), None)
+                .await
+                .expect("list tools");
+            assert_eq!(tools.error, None);
+            assert_eq!(tools.id, JsonRpcId::Number(2));
+            assert_eq!(
+                tools.result,
+                Some(McpListToolsResult {
+                    tools: vec![McpTool {
+                        name: "echo".to_string(),
+                        description: Some("Echoes text".to_string()),
+                        input_schema: Some(json!({
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                            "required": ["text"]
+                        })),
+                        annotations: None,
+                        meta: None,
+                    }],
+                    next_cursor: None,
+                })
+            );
+
+            let call = process
+                .call_tool(
+                    JsonRpcId::String("call-1".to_string()),
+                    McpToolCallParams {
+                        name: "echo".to_string(),
+                        arguments: Some(json!({"text": "hello"})),
+                        meta: None,
+                    },
+                )
+                .await
+                .expect("call tool");
+            assert_eq!(call.error, None);
+            let call_result = call.result.expect("tool result");
+            assert_eq!(call_result.is_error, Some(false));
+            assert_eq!(
+                call_result.structured_content,
+                Some(json!({"echoed": "hello"}))
+            );
+            assert_eq!(call_result.content.len(), 1);
+            assert_eq!(call_result.content[0].kind, "text");
+            assert_eq!(
+                call_result.content[0].data.get("text"),
+                Some(&json!("echo:hello"))
+            );
+
+            let resources = process
+                .list_resources(JsonRpcId::Number(3), None)
+                .await
+                .expect("list resources");
+            let resources_result = resources.result.expect("resources result");
+            assert_eq!(resources_result.resources.len(), 1);
+            assert_eq!(resources_result.resources[0].uri, "file://guide.txt");
+            assert_eq!(
+                resources_result.resources[0].mime_type.as_deref(),
+                Some("text/plain")
+            );
+
+            let read = process
+                .read_resource(
+                    JsonRpcId::Number(4),
+                    McpReadResourceParams {
+                        uri: "file://guide.txt".to_string(),
+                    },
+                )
+                .await
+                .expect("read resource");
+            assert_eq!(
+                read.result,
+                Some(McpReadResourceResult {
+                    contents: vec![super::McpResourceContents {
+                        uri: "file://guide.txt".to_string(),
+                        mime_type: Some("text/plain".to_string()),
+                        text: Some("contents for file://guide.txt".to_string()),
+                        blob: None,
+                        meta: None,
+                    }],
+                })
+            );
+
+            process.terminate().await.expect("terminate child");
+            let _ = process.wait().await.expect("wait after kill");
+            cleanup_script(&script_path);
+        });
+    }
+
+    #[test]
+    fn surfaces_jsonrpc_errors_from_tool_calls() {
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let script_path = write_mcp_server_script();
+            let transport = script_transport(&script_path);
+            let mut process = McpStdioProcess::spawn(&transport).expect("spawn fake mcp server");
+
+            let response = process
+                .call_tool(
+                    JsonRpcId::Number(9),
+                    McpToolCallParams {
+                        name: "fail".to_string(),
+                        arguments: None,
+                        meta: None,
+                    },
+                )
+                .await
+                .expect("call tool with error response");
+
+            assert_eq!(response.id, JsonRpcId::Number(9));
+            assert!(response.result.is_none());
+            assert_eq!(response.error.as_ref().map(|e| e.code), Some(-32001));
+            assert_eq!(
+                response.error.as_ref().map(|e| e.message.as_str()),
+                Some("tool failed")
+            );
+
+            process.terminate().await.expect("terminate child");
+            let _ = process.wait().await.expect("wait after kill");
+            cleanup_script(&script_path);
         });
     }
 }
