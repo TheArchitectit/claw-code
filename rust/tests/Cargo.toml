@@ -1,0 +1,25 @@
+[package]
+name = "integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Integration tests for R.A.D Codicological"
+
+[[test]]
+name = "integration_tests"
+path = "integration_tests.rs"
+harness = true
+
+[dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+
+# Internal dependencies
+runtime = { path = "../crates/runtime" }
+tools = { path = "../crates/tools" }
+test-utils = { path = "../crates/test-utils" }
+
+[lints]
+workspace = true

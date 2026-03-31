@@ -1,0 +1,221 @@
+    /// Build the complete system prompt for the LLM.
+    ///
+    /// This combines:
+    /// 1. Base system prompt with role definition
+    /// 2. Tool descriptions from the registry
+    /// 3. Custom system prompt (if provided)
+    /// 4. Append system prompt (if provided)
+    /// 5. Thinking mode configuration (if enabled)
+    pub fn build_system_prompt(&self, thinking_config: &crate::context::ThinkingConfig) -> String {
+        let mut prompt_parts = Vec::new();
+
+        // 1. Base system prompt
+        prompt_parts.push(self.base_system_prompt());
+
+        // 2. Tool descriptions
+        let tool_descriptions = self.generate_tool_descriptions();
+        if !tool_descriptions.is_empty() {
+            prompt_parts.push("\n## Available Tools\n".to_string());
+            prompt_parts.push(tool_descriptions);
+        }
+
+        // 3. Tool usage instructions
+        prompt_parts.push(self.tool_usage_instructions());
+
+        // 4. Thinking mode instructions
+        if let Some(thinking_instructions) = self.thinking_instructions(thinking_config) {
+            prompt_parts.push(thinking_instructions);
+        }
+
+        // 5. Custom system prompt (replaces the default guidelines)
+        if let Some(ref custom) = self.custom_system_prompt {
+            // Insert custom prompt before response format guidelines
+            prompt_parts.push(format!("\n## Custom Instructions\n{}\n", custom));
+        } else {
+            // Default response format guidelines
+            prompt_parts.push(self.response_format_guidelines());
+        }
+
+        // 6. Append system prompt (always added at the end)
+        if let Some(ref append) = self.append_system_prompt {
+            prompt_parts.push(format!("\n## Additional Instructions\n{}\n", append));
+        }
+
+        prompt_parts.concat()
+    }
+
+    /// Generate the base system prompt with role definition.
+    fn base_system_prompt(&self) -> String {
+        format!(r#"You are Claude Code, an AI assistant built by Anthropic.
+You are an expert in software engineering, programming, and technical problem-solving.
+
+## Role Definition
+
+Your purpose is to help users with software engineering tasks including:
+- Writing, reading, and modifying code
+- Debugging and troubleshooting issues
+- Explaining code and concepts
+- Running commands and tools
+- Managing projects and files
+- Providing technical guidance
+
+## General Guidelines
+
+1. **Be Helpful and Accurate**: Focus on providing correct, well-tested solutions.
+2. **Explain Your Reasoning**: When making non-trivial changes, explain why you chose that approach.
+3. **Ask for Clarification**: If a request is ambiguous, ask for clarification rather than guessing.
+4. **Respect User Preferences**: Follow user instructions about code style, architecture, and approach.
+5. **Security First**: Never introduce security vulnerabilities; validate inputs and avoid injection risks.
+6. **Efficiency**: Prefer simple, efficient solutions over complex ones.
+
+Current Working Directory: {}
+"#,
+            self.cwd
+        )
+    }
+
+    /// Generate tool descriptions from the registry.
+    fn generate_tool_descriptions(&self) -> String {
+        let tools = self.tool_registry.enabled_tools();
+
+        if tools.is_empty() {
+            return String::new();
+        }
+
+        let mut descriptions = Vec::new();
+        descriptions.push("You have access to the following tools:\n".to_string());
+
+        for tool in tools {
+            let tool_def = self.format_tool_definition(&tool);
+            descriptions.push(tool_def);
+            descriptions.push("\n".to_string());
+        }
+
+        descriptions.concat()
+    }
+
+    /// Format a single tool definition for the system prompt.
+    fn format_tool_definition(&self, tool: &crate::tool::SharedTool) -> String {
+        let name = tool.name();
+        let schema = tool.input_schema();
+
+        let aliases = if tool.aliases().is_empty() {
+            String::new()
+        } else {
+            format!(" (aliases: {})", tool.aliases().join(", "))
+        };
+
+        let search_hint = tool.search_hint()
+            .map(|h| format!(" - {}", h))
+            .unwrap_or_default();
+
+        let schema_json = serde_json::to_string_pretty(&schema)
+            .unwrap_or_else(|_| "{}".to_string());
+
+        format!(r#"### {}{}{}
+
+Input Schema:
+```json
+{}
+```
+"#,
+            name,
+            aliases,
+            search_hint,
+            schema_json
+        )
+    }
+
+    /// Tool usage instructions for the LLM.
+    fn tool_usage_instructions(&self) -> String {
+        r#"
+## Tool Usage Instructions
+
+To use a tool, include a tool_use block in your response with:
+- `id`: A unique identifier for this tool use
+- `name`: The tool name (must match exactly)
+- `input`: Valid JSON matching the tool's input schema
+
+Example:
+```json
+{
+  "id": "tool_123",
+  "name": "Read",
+  "input": {
+    "file_path": "/path/to/file.txt"
+  }
+}
+```
+
+Guidelines:
+1. Use tools when they help accomplish the user's request
+2. Validate JSON before submitting - invalid JSON will cause errors
+3. Wait for tool results before continuing with dependent operations
+4. Tools may return errors - handle them gracefully
+5. Chain multiple tools when needed for complex tasks
+6. Prefer built-in tools over general knowledge when available
+
+"#.to_string()
+    }
+
+    /// Response format guidelines.
+    fn response_format_guidelines(&self) -> String {
+        r#"
+## Response Format Guidelines
+
+1. **Text Responses**: Provide clear, concise text responses using markdown formatting.
+2. **Code Blocks**: Use appropriate language tags for code snippets.
+3. **Tool Results**: Tool results will be provided in subsequent messages.
+4. **Progressive Disclosure**: For long outputs, provide summaries with details available on request.
+
+"#.to_string()
+    }
+
+    /// Generate thinking mode instructions if enabled.
+    fn thinking_instructions(
+        &self,
+        thinking_config: &crate::context::ThinkingConfig,
+    ) -> Option<String> {
+        match thinking_config {
+            crate::context::ThinkingConfig::Disabled => None,
+            crate::context::ThinkingConfig::Adaptive => {
+                Some(r#"
+## Thinking Mode (Adaptive)
+
+Use thinking blocks for complex reasoning, multi-step problems, or when you need to work through a problem carefully. Include your reasoning process in `<thinking>` blocks when appropriate.
+
+"#.to_string())
+            }
+            crate::context::ThinkingConfig::Enabled { budget_tokens } => {
+                Some(format!(r#"
+## Thinking Mode (Enabled)
+
+Thinking is enabled with a budget of {} tokens.
+
+Use thinking blocks to:
+1. Work through complex problems step by step
+2. Plan multi-tool operations before executing
+3. Debug issues systematically
+4. Analyze trade-offs between approaches
+
+Include your reasoning in `<thinking>` blocks.
+
+"#, budget_tokens))
+            }
+        }
+    }
+
+    /// Get available tools as JSON schema definitions for LLM API.
+    pub fn get_available_tool_definitions(&self) -> Vec<serde_json::Value> {
+        self.tool_registry
+            .enabled_tools()
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "name": tool.name(),
+                    "description": tool.search_hint().unwrap_or(""),
+                    "input_schema": tool.input_schema(),
+                })
+            })
+            .collect()
+    }

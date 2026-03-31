@@ -1,0 +1,68 @@
+[package]
+name = "services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging & Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# OpenTelemetry
+opentelemetry = "0.23"
+opentelemetry_sdk = { version = "0.23", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.16", features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = "0.24"
+
+# OAuth
+oauth2 = { version = "4.4", features = ["reqwest"] }
+reqwest = { version = "0.12", features = ["json"] }
+
+# Secure storage
+keyring = "3.6"
+
+# Encryption for token storage
+ring = "0.17"
+base64 = "0.22"
+
+# HTTP server for OAuth callback
+axum = "0.7"
+tower = "0.4"
+
+# Browser opener for OAuth
+open = "5.3"
+
+# Hex encoding
+hex = "0.4"
+
+# Time
+chrono = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+dashmap = { workspace = true }
+tempfile = { workspace = true }
+dirs = "5.0"
+rand = "0.8"
+
+# Internal dependencies
+state = { path = "../state" }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = { workspace = true }

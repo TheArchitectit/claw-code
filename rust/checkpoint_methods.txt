@@ -1,0 +1,231 @@
+// ============================================================================
+// Checkpoint / State Persistence Methods (to be added to query_engine.rs)
+// ============================================================================
+
+use state::{CheckpointId, CheckpointMetadata, ConversationState, SessionManager};
+
+/// Save a checkpoint of the current conversation state.
+pub async fn save_checkpoint(
+    &self,
+    session_manager: &SessionManager,
+    description: Option<String>,
+) -> QueryResult<CheckpointId> {
+    let checkpoint_id = state::CheckpointId::generate();
+
+    let messages = self.messages.read().await.clone();
+    let permission_denials = self.permission_denials.lock().await.clone();
+    let usage = *self.total_usage.lock().await;
+    let cost = *self.total_cost.lock().await;
+    let turn_count = *self.turn_count.lock().await;
+
+    let messages_json: Vec<serde_json::Value> = messages
+        .into_iter()
+        .map(|m| serde_json::to_value(m).map_err(|e| QueryEngineError::StatePersistence {
+            message: format!("Failed to serialize message: {}", e)
+        }))
+        .collect::<QueryResult<Vec<_>>>()?;
+
+    let denials_json: Vec<serde_json::Value> = permission_denials
+        .into_iter()
+        .map(|d| serde_json::to_value(d).map_err(|e| QueryEngineError::StatePersistence {
+            message: format!("Failed to serialize permission denial: {}", e)
+        }))
+        .collect::<QueryResult<Vec<_>>>()?;
+
+    let usage_json = serde_json::to_value(usage).map_err(|e| QueryEngineError::StatePersistence {
+        message: format!("Failed to serialize usage stats: {}", e)
+    })?;
+
+    let session_id_str = self.session_id.to_string();
+    let mut state_builder = ConversationState::new(&session_id_str, &checkpoint_id)
+        .with_messages(messages_json)
+        .with_permission_denials(denials_json)
+        .with_usage_stats(usage_json)
+        .with_turn_count(turn_count)
+        .with_total_cost(cost);
+
+    if let Some(desc) = description {
+        state_builder = state_builder.with_description(desc);
+    }
+
+    let conversation_state = state_builder;
+
+    session_manager.save_checkpoint(&conversation_state).await
+        .map_err(|e| QueryEngineError::StatePersistence {
+            message: format!("Failed to save checkpoint: {}", e)
+        })?;
+
+    info!("Saved checkpoint {} for session {}", checkpoint_id, self.session_id);
+
+    if let Err(e) = session_manager.cleanup_old_checkpoints(&session_id_str, 50).await {
+        warn!("Failed to cleanup old checkpoints: {}", e);
+    }
+
+    Ok(CheckpointId::new(checkpoint_id))
+}
+
+/// Restore the conversation state from a checkpoint.
+pub async fn restore_from_checkpoint(
+    &self,
+    session_manager: &SessionManager,
+    checkpoint_id: CheckpointId,
+) -> QueryResult<()> {
+    let session_id_str = self.session_id.to_string();
+    let checkpoint_id_str = checkpoint_id.to_string();
+
+    let conversation_state = session_manager
+        .load_checkpoint(&session_id_str, &checkpoint_id_str)
+        .await
+        .map_err(|e| QueryEngineError::StatePersistence {
+            message: format!("Failed to load checkpoint: {}", e)
+        })?
+        .ok_or_else(|| QueryEngineError::CheckpointNotFound {
+            checkpoint_id: checkpoint_id_str.clone(),
+        })?;
+
+    let messages: Vec<Message> = conversation_state
+        .messages
+        .into_iter()
+        .map(|m| serde_json::from_value(m).map_err(|e| QueryEngineError::StatePersistence {
+            message: format!("Failed to deserialize message: {}", e)
+        }))
+        .collect::<QueryResult<Vec<_>>>()?;
+
+    let denials: Vec<PermissionDenial> = conversation_state
+        .permission_denials
+        .into_iter()
+        .map(|d| serde_json::from_value(d).map_err(|e| QueryEngineError::StatePersistence {
+            message: format!("Failed to deserialize permission denial: {}", e)
+        }))
+        .collect::<QueryResult<Vec<_>>>()?;
+
+    let usage: RuntimeUsage = serde_json::from_value(conversation_state.usage_stats)
+        .map_err(|e| QueryEngineError::StatePersistence {
+            message: format!("Failed to deserialize usage stats: {}", e)
+        })?;
+
+    {
+        let mut messages_guard = self.messages.write().await;
+        *messages_guard = messages;
+    }
+
+    {
+        let mut denials_guard = self.permission_denials.lock().await;
+        *denials_guard = denials;
+    }
+
+    {
+        let mut usage_guard = self.total_usage.lock().await;
+        *usage_guard = usage;
+    }
+
+    {
+        let mut cost_guard = self.total_cost.lock().await;
+        *cost_guard = conversation_state.total_cost;
+    }
+
+    {
+        let mut turn_guard = self.turn_count.lock().await;
+        *turn_guard = conversation_state.turn_count;
+    }
+
+    info!(
+        "Restored checkpoint {} for session {} (turn_count: {}, messages: {})",
+        checkpoint_id,
+        self.session_id,
+        conversation_state.turn_count,
+        conversation_state.messages.len()
+    );
+
+    Ok(())
+}
+
+/// List all available checkpoints for this session.
+pub async fn list_checkpoints(
+    &self,
+    session_manager: &SessionManager,
+) -> QueryResult<Vec<CheckpointMetadata>> {
+    let session_id_str = self.session_id.to_string();
+
+    session_manager
+        .list_checkpoints(&session_id_str)
+        .await
+        .map_err(|e| QueryEngineError::StatePersistence {
+            message: format!("Failed to list checkpoints: {}", e)
+        })
+}
+
+/// Delete a checkpoint.
+pub async fn delete_checkpoint(
+    &self,
+    session_manager: &SessionManager,
+    checkpoint_id: CheckpointId,
+) -> QueryResult<()> {
+    let session_id_str = self.session_id.to_string();
+    let checkpoint_id_str = checkpoint_id.to_string();
+
+    session_manager
+        .delete_checkpoint(&session_id_str, &checkpoint_id_str)
+        .await
+        .map_err(|e| QueryEngineError::StatePersistence {
+            message: format!("Failed to delete checkpoint: {}", e)
+        })?;
+
+    info!("Deleted checkpoint {} for session {}", checkpoint_id, self.session_id);
+
+    Ok(())
+}
+
+/// Auto-save a checkpoint at regular intervals.
+pub async fn auto_save_checkpoint(
+    &self,
+    session_manager: &SessionManager,
+) -> QueryResult<Option<CheckpointId>> {
+    let turn_count = *self.turn_count.lock().await;
+
+    if turn_count == 0 {
+        return Ok(None);
+    }
+
+    let description = format!("Auto-save at turn {}", turn_count);
+    let checkpoint_id = self.save_checkpoint(session_manager, Some(description)).await?;
+
+    Ok(Some(checkpoint_id))
+}
+
+/// Save a checkpoint before a potentially risky operation.
+pub async fn save_checkpoint_before_risky_operation(
+    &self,
+    session_manager: &SessionManager,
+    operation_name: &str,
+) -> QueryResult<CheckpointId> {
+    let description = format!("Pre-operation checkpoint before: {}", operation_name);
+    self.save_checkpoint(session_manager, Some(description)).await
+}
+
+/// Attempt to recover from an interrupted conversation.
+pub async fn recover_from_interruption(
+    &self,
+    session_manager: &SessionManager,
+) -> QueryResult<Option<CheckpointId>> {
+    let checkpoints = self.list_checkpoints(session_manager).await?;
+
+    if checkpoints.is_empty() {
+        warn!("No checkpoints found for session {} to recover from", self.session_id);
+        return Ok(None);
+    }
+
+    let latest_checkpoint = &checkpoints[0];
+    let checkpoint_id = CheckpointId::new(latest_checkpoint.id.clone());
+
+    self.restore_from_checkpoint(session_manager, checkpoint_id.clone()).await?;
+
+    info!(
+        "Recovered session {} from checkpoint {} (created at: {})",
+        self.session_id,
+        checkpoint_id,
+        latest_checkpoint.created_at
+    );
+
+    Ok(Some(checkpoint_id))
+}
