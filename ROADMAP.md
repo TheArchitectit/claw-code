@@ -1621,3 +1621,43 @@ Original filing (2026-04-13): user requested a `-acp` parameter to support ACP p
    **Blocker.** None. Fix is ~30–50 lines in `runtime/src/prompt.rs::discover_instruction_files` plus a new `check_instructions_health` function in the doctor surface plus the settings-schema toggle. Same glue shape as #85's bound for skills and agents; all three can land in one PR.
 
    **Source.** Jobdori dogfood 2026-04-17 against `/tmp/claude-md-injection/inner/work` on main HEAD `82bd8bb` in response to Clawhip pinpoint nudge at `1494691430096961767`. Second (and higher-severity) member of the "discovery-overreach" cluster after #85. Different axis from the #80–#84 / #86–#87 truth-audit cluster: here the discovery surface is reaching into state it should not, and the consumed state feeds directly into the agent's system prompt — the highest-trust context surface in the entire runtime.
+
+89. **`claw` is blind to mid-operation git states (rebase-in-progress, merge-in-progress, cherry-pick-in-progress, bisect-in-progress) — `doctor` returns `Workspace: ok` on a workspace that is literally paused on a conflict** — dogfooded 2026-04-17 on main HEAD `9882f07` from `/tmp/git-state-probe`. A branch rebase that halted on a conflict leaves the workspace in the `rebase-merge` state with conflict files in the index and `HEAD` detached on the rebase's intermediate commit. `claw`'s workspace surface reports this as a plain dirty workspace on "branch detached HEAD," with no signal that the lane is mid-operation and cannot safely accept new work.
+
+   **Concrete repro.**
+   ```
+   mkdir -p /tmp/git-state-probe && cd /tmp/git-state-probe && git init -q
+   echo one > a.txt && git add . && git -c user.email=a@b -c user.name=a commit -qm init
+   git branch feature && git checkout -q feature
+   echo feature > a.txt && git -c user.email=a@b -c user.name=a commit -qam feature
+   git checkout -q master
+   echo master > a.txt && git -c user.email=a@b -c user.name=a commit -qam master
+   git -c core.editor=true rebase feature    # halts on conflict
+
+   ls .git/rebase-merge/                      # -> rebase-merge/ exists; lane is paused
+   claw --output-format json status           # -> git_state='dirty · 1 files · 1 staged, 1 unstaged, 1 conflicted'; git_branch='detached HEAD'
+   claw --output-format json doctor           # -> workspace: {"status":"ok","summary":"project root detected on branch detached HEAD"}
+   ```
+   `doctor`'s workspace check reports `status: ok` with the summary `"project root detected on branch detached HEAD"`. No field in the JSON mentions `rebase`, `merge`, `cherry_pick`, or `bisect`. Merging/cherry-picking/bisecting in progress produce the same blind spot via `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD`, `.git/BISECT_LOG`, which are equally ignored.
+
+   **Trace path.**
+    - `rust/crates/rusty-claude-cli/src/main.rs:2589-2608` — `resolve_git_branch_for` falls back to `"detached HEAD"` as a string when the branch is unresolvable. That string is used everywhere downstream as the "branch" identifier; no caller distinguishes "user checked out a tag" from "rebase is mid-way."
+    - `rust/crates/rusty-claude-cli/src/main.rs:2550-2587` — `parse_git_workspace_summary` scans `git status --short --branch` output and tallies `changed_files` / `staged_files` / `unstaged_files` / `conflicted_files` / `untracked_files`. That's the extent of git-state introspection. **No `.git/rebase-merge`, `.git/rebase-apply`, `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD`, `.git/BISECT_LOG` check anywhere in the tree** — `grep -rn 'MERGE_HEAD\|REBASE_HEAD\|rebase-merge\|rebase-apply\|CHERRY_PICK\|BISECT' rust/crates/ --include='*.rs'` returns empty outside test fixtures.
+    - `rust/crates/rusty-claude-cli/src/main.rs:1895-1910` and `rusty-claude-cli/src/main.rs:4950-4965` — `check_workspace_health` / `status_context_json` emit `status: ok` so long as a project root was detected, regardless of whether the repository is mid-operation. No `in_rebase: true`, no `in_merge: true`, no `operation: { kind, paused_at, resume_command, abort_command }` field anywhere.
+
+   **Why this is a clawability gap.** ROADMAP Principle #4 ("Branch freshness before blame") and Principle #5 ("Partial success is first-class") both explicitly depend on workspace state being legible. A mid-rebase lane is the textbook definition of a partial / incomplete state — and today's surface presents it as just another dirty workspace:
+    1. *Preflight blindness.* A clawhip orchestrator that runs `claw doctor` before spawning a lane gets `workspace: ok` on a workspace whose next `git commit` will corrupt rebase metadata, whose `HEAD` moves on `git rebase --continue`, and whose test suite is currently running against an intermediate tree that does not correspond to any real branch tip.
+    2. *Stale-branch detection breaks.* The principle-4 test ("is this branch up to date with base?") is meaningless when `HEAD` is pointing at a rebase's intermediate commit. A claw that runs `git log base..HEAD` against a rebase-in-progress `HEAD` gets noise, not a freshness verdict.
+    3. *No recovery surface.* Even when a claw somehow detects the bad state from another source, it has nothing in `claw`'s own machine-readable output to anchor its recovery: no `operation.kind = "rebase"`, no `operation.abort_hint = "git rebase --abort"`, no `operation.resume_hint = "git rebase --continue"`. Recovery becomes text-scraping terminal output — exactly the shape ROADMAP principle #6 ("Terminal is transport, not truth") argues against.
+    4. *Same "surface lies about runtime truth" family as #80–#87.* The workspace doctor check asserts `ok` for a state that is anything but. Operator reads the doctor output, believes the workspace is healthy, launches a worker, corrupts the rebase.
+
+   **Fix shape — three pieces, each small.**
+   1. *Detect in-progress git operations.* In `parse_git_workspace_summary` (or a sibling `detect_git_operation`), check for marker files: `.git/rebase-merge/`, `.git/rebase-apply/`, `.git/MERGE_HEAD`, `.git/CHERRY_PICK_HEAD`, `.git/BISECT_LOG`, `.git/REVERT_HEAD`. Map each to a typed `GitOperation::{ Rebase, Merge, CherryPick, Bisect, Revert }` enum variant. ~20 lines including tests.
+   2. *Expose the operation in `status` and `doctor` JSON.* Add `workspace.git_operation: null | { kind: "rebase"|"merge"|"cherry_pick"|"bisect"|"revert", paused: bool, abort_hint: string, resume_hint: string }` to the workspace block. When `git_operation != null`, `check_workspace_health` emits `DiagnosticLevel::Warn` (not `Ok`) with a summary like `"rebase in progress; lane is not safe to accept new work"`.
+   3. *Preserve the existing counts*. `changed_files` / `conflicted_files` / `staged_files` stay where they are; the new `git_operation` field is additive so existing consumers don't break.
+
+   **Acceptance.** `claw --output-format json status` on a mid-rebase workspace returns `workspace.git_operation: { kind: "rebase", paused: true, ... }`. `claw --output-format json doctor` on the same workspace returns `workspace.status = "warn"` with a summary that names the operation. An orchestrator preflighting lanes can branch on `git_operation != null` without scraping the `git_state` prose string.
+
+   **Blocker.** None. Marker-file detection is filesystem-only; no new git subprocess calls; no schema change beyond a single additive field. Same reporting-shape family as #82 (sandbox machinery visible) and #87 (permission source field) — all are "add a typed field the surface is currently silent about."
+
+   **Source.** Jobdori dogfood 2026-04-17 against `/tmp/git-state-probe` on main HEAD `9882f07` in response to Clawhip pinpoint nudge at `1494698980091756678`. Eighth member of the truth-audit / diagnostic-integrity cluster after #80, #81, #82, #83, #84, #86, #87 — and the one most directly in scope for the "branch freshness before blame" principle the ROADMAP's preflight section is built around. Distinct from the discovery-overreach cluster (#85, #88): here the workspace surface is not reaching into state it shouldn't — it is failing to report state that lives in plain view inside `.git/`.
