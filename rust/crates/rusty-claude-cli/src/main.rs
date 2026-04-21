@@ -1009,10 +1009,16 @@ fn parse_single_word_command_alias(
             return None;
         }
         // Unrecognized suffix like "--json"
-        return Some(Err(format!(
+        let mut msg = format!(
             "unrecognized argument `{}` for subcommand `{}`",
             rest[1], verb
-        )));
+        );
+        // #152: common mistake — users type `--json` expecting JSON output.
+        // Hint at the correct flag so they don't have to re-read --help.
+        if rest[1] == "--json" {
+            msg.push_str("\nDid you mean `--output-format json`?");
+        }
+        return Some(Err(msg));
     }
 
     if rest.len() != 1 {
@@ -1551,7 +1557,14 @@ fn parse_system_prompt_args(
                 date.clone_from(value);
                 index += 2;
             }
-            other => return Err(format!("unknown system-prompt option: {other}")),
+            other => {
+                // #152: hint `--output-format json` when user types `--json`.
+                let mut msg = format!("unknown system-prompt option: {other}");
+                if other == "--json" {
+                    msg.push_str("\nDid you mean `--output-format json`?");
+                }
+                return Err(msg);
+            }
         }
     }
 
@@ -10272,6 +10285,22 @@ mod tests {
                 output_format: CliOutputFormat::Text,
             }
         );
+        // #152: `--json` on diagnostic verbs should hint the correct flag.
+        let err = parse_args(&["doctor".to_string(), "--json".to_string()])
+            .expect_err("`doctor --json` should fail with hint");
+        assert!(
+            err.contains("unrecognized argument `--json` for subcommand `doctor`"),
+            "error should name the verb: {err}"
+        );
+        assert!(
+            err.contains("Did you mean `--output-format json`?"),
+            "error should hint the correct flag: {err}"
+        );
+        // Other unrecognized args should NOT trigger the --json hint.
+        let err_other = parse_args(&["doctor".to_string(), "garbage".to_string()])
+            .expect_err("`doctor garbage` should fail without --json hint");
+        assert!(!err_other.contains("--output-format json"),
+            "unrelated args should not trigger --json hint: {err_other}");
     }
 
     #[test]
