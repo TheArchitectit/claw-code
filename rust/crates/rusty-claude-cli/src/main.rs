@@ -4406,6 +4406,10 @@ impl LiveCli {
                             println!("{}", format_compact_report(removed, result.compacted_session.messages.len(), false));
                         }
                         
+                        // Replace self.runtime's session with the compacted version
+                        // so prepare_turn_runtime builds from the compacted session
+                        *self.runtime.session_mut() = result.compacted_session.clone();
+                        
                         // Step 2: Build a new runtime with the compacted session and retry
                         let (mut new_runtime, hook_abort_monitor) = self.prepare_turn_runtime(true)?;
                         drop(hook_abort_monitor); // not needed for retry
