@@ -1175,6 +1175,25 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
             }),
             required_permission: PermissionMode::DangerFullAccess,
         },
+        ToolSpec {
+            name: "SubAgent",
+            description: "Launch a lightweight sub-agent that autonomously performs multi-step work using a fast model. Use for tasks like searching code, reading multiple files, or gathering context that would require many sequential tool calls. Returns a summary of the sub-agent's findings.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string" },
+                    "task_type": {
+                        "type": "string",
+                        "enum": ["Explore", "Plan", "Verify"],
+                        "description": "Explore=search+read only, Plan=explore+todo, Verify=explore+bash+todo"
+                    },
+                    "model": { "type": "string" }
+                },
+                "required": ["prompt"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::DangerFullAccess,
+        },
     ]
 }
 
@@ -1293,6 +1312,7 @@ fn execute_tool_with_enforcer(
         "TestingPermission" => {
             from_value::<TestingPermissionInput>(input).and_then(run_testing_permission)
         }
+        "SubAgent" => from_value::<SubAgentInput>(input).and_then(run_sub_agent),
         _ => Err(format!("unsupported tool: {name}")),
     }
 }
@@ -1841,6 +1861,104 @@ fn run_testing_permission(input: TestingPermissionInput) -> Result<String, Strin
         "message": "Testing permission tool stub"
     }))
 }
+
+#[allow(clippy::needless_pass_by_value)]
+fn run_sub_agent(input: SubAgentInput) -> Result<String, String> {
+    let task_type = input.task_type.as_deref().unwrap_or("Explore");
+    let allowed_tools: BTreeSet<String> = match task_type {
+        "Plan" => BTreeSet::from([
+            "read_file".to_string(),
+            "glob_search".to_string(),
+            "grep_search".to_string(),
+            "ToolSearch".to_string(),
+            "TodoWrite".to_string(),
+            "StructuredOutput".to_string(),
+        ]),
+        "Verify" => BTreeSet::from([
+            "bash".to_string(),
+            "read_file".to_string(),
+            "glob_search".to_string(),
+            "grep_search".to_string(),
+            "ToolSearch".to_string(),
+            "TodoWrite".to_string(),
+            "StructuredOutput".to_string(),
+        ]),
+        _ => BTreeSet::from([
+            "read_file".to_string(),
+            "glob_search".to_string(),
+            "grep_search".to_string(),
+            "WebFetch".to_string(),
+            "WebSearch".to_string(),
+            "ToolSearch".to_string(),
+            "StructuredOutput".to_string(),
+        ]),
+    };
+
+    let model = input
+        .model
+        .or_else(|| load_subagent_model_from_config())
+        .unwrap_or_else(|| DEFAULT_AGENT_MODEL.to_string());
+
+    let system_prompt = build_sub_agent_system_prompt(task_type)
+        .map_err(|e| format!("failed to build sub-agent system prompt: {e}"))?;
+
+    let api_client = ProviderRuntimeClient::new(model.clone(), allowed_tools.clone())
+        .map_err(|e| format!("failed to create sub-agent API client: {e}"))?;
+    let permission_policy = agent_permission_policy();
+    let tool_executor = SubagentToolExecutor::new(allowed_tools)
+        .with_enforcer(PermissionEnforcer::new(permission_policy.clone()));
+
+    let mut runtime = ConversationRuntime::new(
+        Session::new(),
+        api_client,
+        tool_executor,
+        permission_policy,
+        system_prompt,
+    )
+    .with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS);
+
+    let summary = runtime
+        .run_turn(input.prompt, None)
+        .map_err(|e| format!("sub-agent failed: {e}"))?;
+
+    let result_text = final_assistant_text(&summary);
+    let tool_count: usize = summary
+        .assistant_messages
+        .iter()
+        .map(|m| m.blocks.iter().filter(|b| matches!(b, ContentBlock::ToolUse { .. })).count())
+        .sum();
+
+    to_pretty_json(json!({
+        "result": result_text,
+        "tool_calls": tool_count,
+        "iterations": summary.iterations,
+    }))
+}
+
+fn load_subagent_model_from_config() -> Option<String> {
+    std::env::current_dir().ok().and_then(|cwd| {
+        ConfigLoader::default_for(cwd)
+            .load()
+            .ok()
+            .and_then(|config| config.subagent_model().map(|m| m.to_string()))
+    })
+}
+
+fn build_sub_agent_system_prompt(task_type: &str) -> Result<Vec<String>, String> {
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let mut prompt = load_system_prompt(
+        cwd,
+        DEFAULT_AGENT_SYSTEM_DATE.to_string(),
+        std::env::consts::OS,
+        "unknown",
+    )
+    .map_err(|error| error.to_string())?;
+    prompt.push(format!(
+        "You are a fast sub-agent performing a {task_type} task. Work autonomously, use available tools efficiently, do not ask questions. Return a concise summary of your findings."
+    ));
+    Ok(prompt)
+}
+
 fn from_value<T: for<'de> Deserialize<'de>>(input: &Value) -> Result<T, String> {
     serde_json::from_value(input.clone()).map_err(|error| error.to_string())
 }
@@ -2545,6 +2663,15 @@ struct McpToolInput {
 #[derive(Debug, Deserialize)]
 struct TestingPermissionInput {
     action: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubAgentInput {
+    prompt: String,
+    #[serde(default)]
+    task_type: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

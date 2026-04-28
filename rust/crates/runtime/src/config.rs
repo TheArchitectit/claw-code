@@ -65,6 +65,7 @@ pub struct RuntimeFeatureConfig {
     sandbox: SandboxConfig,
     provider_fallbacks: ProviderFallbackConfig,
     trusted_roots: Vec<String>,
+    subagent_model: Option<String>,
 }
 
 /// Ordered chain of fallback model identifiers used when the primary
@@ -315,6 +316,7 @@ impl ConfigLoader {
             sandbox: parse_optional_sandbox_config(&merged_value)?,
             provider_fallbacks: parse_optional_provider_fallbacks(&merged_value)?,
             trusted_roots: parse_optional_trusted_roots(&merged_value)?,
+            subagent_model: parse_optional_subagent_model(&merged_value),
         };
 
         Ok(RuntimeConfig {
@@ -413,6 +415,11 @@ impl RuntimeConfig {
     #[must_use]
     pub fn trusted_roots(&self) -> &[String] {
         &self.feature_config.trusted_roots
+    }
+
+    #[must_use]
+    pub fn subagent_model(&self) -> Option<&str> {
+        self.feature_config.subagent_model.as_deref()
     }
 }
 
@@ -738,6 +745,19 @@ fn parse_optional_model(root: &JsonValue) -> Option<String> {
         .and_then(|object| object.get("model"))
         .and_then(JsonValue::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn parse_optional_subagent_model(value: &JsonValue) -> Option<String> {
+    value
+        .as_object()
+        .and_then(|object| {
+            object
+                .get("subagentModel")
+                .or_else(|| object.get("subagent_model"))
+        })
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
 }
 
 fn parse_optional_aliases(root: &JsonValue) -> Result<BTreeMap<String, String>, ConfigError> {
