@@ -343,6 +343,7 @@ fn merge_prompt_with_stdin(prompt: &str, stdin_content: Option<&str>) -> String 
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
+    eprintln!("[claw-debug] parsed args: {:?}", parse_args(&args));
     match parse_args(&args)? {
         CliAction::DumpManifests {
             output_format,
