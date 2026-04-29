@@ -1198,6 +1198,9 @@ pub enum SlashCommand {
         action: Option<String>,
         target: Option<String>,
     },
+    Team {
+        action: Option<String>,
+    },
     Unknown(String),
 }
 
@@ -1284,6 +1287,7 @@ impl SlashCommand {
             Self::Theme { .. } => "/theme",
             Self::Voice { .. } => "/voice",
             Self::Usage { .. } => "/usage",
+            Self::Team { .. } => "/team",
             Self::Setup => "/setup",
             Self::Rename { .. } => "/rename",
             Self::Copy { .. } => "/copy",
@@ -1497,6 +1501,7 @@ pub fn validate_slash_command_input(
         "theme" => SlashCommand::Theme { name: remainder },
         "voice" => SlashCommand::Voice { mode: remainder },
         "usage" => SlashCommand::Usage { scope: remainder },
+        "team" => SlashCommand::Team { action: remainder },
         "setup" => SlashCommand::Setup,
         "rename" => SlashCommand::Rename { name: remainder },
         "copy" => SlashCommand::Copy { target: remainder },
@@ -4196,6 +4201,7 @@ pub fn handle_slash_command(
         | SlashCommand::AddDir { .. }
         | SlashCommand::History { .. }
         | SlashCommand::Lsp { .. }
+        | SlashCommand::Team { .. }
         | SlashCommand::Setup        | SlashCommand::Unknown(_) => None,
     }
 }
