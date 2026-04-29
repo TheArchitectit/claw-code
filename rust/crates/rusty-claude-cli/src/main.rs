@@ -3486,6 +3486,7 @@ fn run_resume_command(
         | SlashCommand::OutputStyle { .. }
         | SlashCommand::AddDir { .. }
         | SlashCommand::Lsp { .. }
+        | SlashCommand::Team { .. }
         | SlashCommand::Setup => Err("unsupported resumed slash command".into()),    }
 }
 
@@ -3708,6 +3709,17 @@ fn run_repl(
                     cli.set_model(Some(new_model))?;
                 }
                 println!("{}", format_connected_line(&cli.model));
+            }
+            input::ReadOutcome::TeamToggle => {
+                // Ctrl+T toggles agent teams mode
+                let current = std::env::var("CLAWD_AGENT_TEAMS").unwrap_or_default();
+                if current == "1" {
+                    std::env::set_var("CLAWD_AGENT_TEAMS", "0");
+                    eprintln!("[team] Agent teams disabled");
+                } else {
+                    std::env::set_var("CLAWD_AGENT_TEAMS", "1");
+                    eprintln!("[team] Agent teams enabled (TeamCreate now available)");
+                }
             }
             input::ReadOutcome::Cancel => {}
             input::ReadOutcome::Exit => {
@@ -4668,6 +4680,39 @@ impl LiveCli {
             }
             SlashCommand::Init => {
                 run_init(CliOutputFormat::Text)?;
+                false
+            }
+            SlashCommand::Team { action } => {
+                match action.as_deref().unwrap_or("") {
+                    "on" | "enable" => {
+                        std::env::set_var("CLAWD_AGENT_TEAMS", "1");
+                        eprintln!("[team] Agent teams enabled (TeamCreate now available)");
+                    }
+                    "off" | "disable" => {
+                        std::env::set_var("CLAWD_AGENT_TEAMS", "0");
+                        eprintln!("[team] Agent teams disabled");
+                    }
+                    "status" => {
+                        let current = std::env::var("CLAWD_AGENT_TEAMS").unwrap_or_default();
+                        if current == "1" {
+                            eprintln!("[team] Agent teams: ENABLED");
+                        } else {
+                            eprintln!("[team] Agent teams: DISABLED (use /team on or Ctrl+T to enable)");
+                        }
+                    }
+                    "" => {
+                        // Toggle
+                        let current = std::env::var("CLAWD_AGENT_TEAMS").unwrap_or_default();
+                        if current == "1" {
+                            std::env::set_var("CLAWD_AGENT_TEAMS", "0");
+                            eprintln!("[team] Agent teams disabled");
+                        } else {
+                            std::env::set_var("CLAWD_AGENT_TEAMS", "1");
+                            eprintln!("[team] Agent teams enabled (TeamCreate now available)");
+                        }
+                    }
+                    other => eprintln!("[team] unknown action: {other}. Use: /team [on|off|status]"),
+                }
                 false
             }
             SlashCommand::Setup => {
@@ -9100,8 +9145,10 @@ impl ToolExecutor for CliToolExecutor {
             "LSP",
             "Agent",
             "AgentMessage",
-            "TeamStatus",
-            "TaskGet",
+                        "TeamStatus",
+            "TaskClaim",
+            "AgentSuggestion",
+            "ContextRequest", "TaskGet",
             "TaskList",
             "TaskOutput",
             "GitStatus",
