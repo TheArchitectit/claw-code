@@ -4,6 +4,7 @@ pub mod doctor;
 pub mod format;
 pub mod model;
 pub mod parse;
+pub mod permission;
 
 pub use doctor::{
     check_auth_health, check_config_health, check_install_source_health, check_sandbox_health,
@@ -30,4 +31,7 @@ pub use parse::{
     permission_mode_from_resolved, ranked_suggestions, resolve_model_alias_with_config,
     AllowedToolSet, CliAction, CliOutputFormat, CLI_OPTION_SUGGESTIONS, LATEST_SESSION_REFERENCE,
     LocalHelpTopic,
+};
+pub use permission::{
+    mcp_annotation_flag, permission_mode_for_mcp_tool, CliPermissionPrompter,
 };
