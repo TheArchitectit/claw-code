@@ -45,11 +45,12 @@ use cli::{
     format_commit_skipped_report, format_compact_report, format_cost_report, format_issue_report,
     format_model_report, format_model_switch_report, format_permissions_report,
     format_permissions_switch_report, format_pr_report, format_resume_report, format_sandbox_report,
-    format_status_report, format_ultraplan_report, is_help_flag, normalize_allowed_tools,
-    normalize_permission_mode, parse_args, parse_permission_mode_arg, permission_mode_from_label,
-    permission_mode_from_resolved, render_doctor_report, render_resume_usage, resolve_model_alias,
-    resolve_model_alias_with_config, run_doctor, validate_model_syntax, AllowedToolSet,
-    BUILD_TARGET, CliAction, CliOutputFormat, CLI_OPTION_SUGGESTIONS, DEPRECATED_INSTALL_COMMAND,
+    format_status_report, format_ultraplan_report, is_help_flag, mcp_annotation_flag,
+    normalize_allowed_tools, normalize_permission_mode, parse_args, parse_permission_mode_arg,
+    permission_mode_for_mcp_tool, permission_mode_from_label, permission_mode_from_resolved,
+    render_doctor_report, render_resume_usage, resolve_model_alias, resolve_model_alias_with_config,
+    run_doctor, validate_model_syntax, AllowedToolSet, BUILD_TARGET, CliAction,
+    CliOutputFormat, CLI_OPTION_SUGGESTIONS, CliPermissionPrompter, DEPRECATED_INSTALL_COMMAND,
     GitWorkspaceSummary, LATEST_SESSION_REFERENCE, OFFICIAL_REPO_SLUG, OFFICIAL_REPO_URL,
     LocalHelpTopic, ModelProvenance, ModelSource, StatusContext, StatusUsage,
 };
@@ -2012,28 +2013,6 @@ fn mcp_wrapper_tool_definitions() -> Vec<RuntimeToolDefinition> {
             required_permission: PermissionMode::ReadOnly,
         },
     ]
-}
-
-fn permission_mode_for_mcp_tool(tool: &McpTool) -> PermissionMode {
-    let read_only = mcp_annotation_flag(tool, "readOnlyHint");
-    let destructive = mcp_annotation_flag(tool, "destructiveHint");
-    let open_world = mcp_annotation_flag(tool, "openWorldHint");
-
-    if read_only && !destructive && !open_world {
-        PermissionMode::ReadOnly
-    } else if destructive || open_world {
-        PermissionMode::DangerFullAccess
-    } else {
-        PermissionMode::WorkspaceWrite
-    }
-}
-
-fn mcp_annotation_flag(tool: &McpTool, key: &str) -> bool {
-    tool.annotations
-        .as_ref()
-        .and_then(|annotations| annotations.get(key))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
 }
 
 struct HookAbortMonitor {
@@ -5340,55 +5319,6 @@ impl runtime::HookProgressReporter for CliHookProgressReporter {
                 "[hook cancelled {event_name}] {tool_name}: {command}",
                 event_name = event.as_str()
             ),
-        }
-    }
-}
-
-struct CliPermissionPrompter {
-    current_mode: PermissionMode,
-}
-
-impl CliPermissionPrompter {
-    fn new(current_mode: PermissionMode) -> Self {
-        Self { current_mode }
-    }
-}
-
-impl runtime::PermissionPrompter for CliPermissionPrompter {
-    fn decide(
-        &mut self,
-        request: &runtime::PermissionRequest,
-    ) -> runtime::PermissionPromptDecision {
-        println!();
-        println!("Permission approval required");
-        println!("  Tool             {}", request.tool_name);
-        println!("  Current mode     {}", self.current_mode.as_str());
-        println!("  Required mode    {}", request.required_mode.as_str());
-        if let Some(reason) = &request.reason {
-            println!("  Reason           {reason}");
-        }
-        println!("  Input            {}", request.input);
-        print!("Approve this tool call? [y/N]: ");
-        let _ = io::stdout().flush();
-
-        let mut response = String::new();
-        match io::stdin().read_line(&mut response) {
-            Ok(_) => {
-                let normalized = response.trim().to_ascii_lowercase();
-                if matches!(normalized.as_str(), "y" | "yes") {
-                    runtime::PermissionPromptDecision::Allow
-                } else {
-                    runtime::PermissionPromptDecision::Deny {
-                        reason: format!(
-                            "tool '{}' denied by user approval prompt",
-                            request.tool_name
-                        ),
-                    }
-                }
-            }
-            Err(error) => runtime::PermissionPromptDecision::Deny {
-                reason: format!("permission approval failed: {error}"),
-            },
         }
     }
 }
