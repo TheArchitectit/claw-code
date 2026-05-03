@@ -82,15 +82,57 @@ use tools::{
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
 
-fn max_tokens_for_model(model: &str) -> u32 {
-    // Reserve more space for input context to avoid context window exhaustion.
-    // Claude 4 models have 128k context windows; reserving ~90k for input
-    // leaves a safe 32-40k for output without triggering context window errors.
-    if model.contains("opus") {
+/// Context window size for Claude 4 models (128k tokens).
+const CLAUDE_4_CONTEXT_WINDOW: u32 = 131_072;
+
+/// Minimum max_tokens to ensure model can still generate meaningful output.
+const MIN_MAX_TOKENS: u32 = 8_192;
+
+/// Calculate max_tokens that fits within context window given input size.
+/// Returns a dynamic value that ensures input + output <= context_window.
+fn max_tokens_for_request(model: &str, estimated_input_tokens: u32) -> u32 {
+    // Base max_tokens depends on model capabilities
+    let base_max = if model.contains("opus") {
         32_000
     } else {
-        40_000
+        64_000
+    };
+
+    // Calculate available space for output after accounting for input
+    let available = CLAUDE_4_CONTEXT_WINDOW.saturating_sub(estimated_input_tokens);
+
+    // Use the smaller of base_max or available, but never below MIN_MAX_TOKENS
+    // Also leave a 4k token safety buffer for estimation errors
+    let with_buffer = available.saturating_sub(4_000);
+    base_max.min(with_buffer).max(MIN_MAX_TOKENS)
+}
+
+#[allow(dead_code)]
+fn max_tokens_for_model(model: &str) -> u32 {
+    max_tokens_for_request(model, 0)
+}
+
+/// Estimate input tokens for a request based on messages and system prompt.
+/// Uses a simple heuristic: ~4 chars per token (rough approximation).
+fn estimate_request_input_tokens(messages: &[api::InputMessage], system: Option<&str>) -> u32 {
+    let mut estimate: u32 = 0;
+
+    // Add system prompt tokens if present
+    if let Some(sys) = system {
+        estimate = estimate.saturating_add((sys.len() / 4 + 1) as u32);
     }
+
+    // Add message tokens - serialize and estimate
+    for msg in messages {
+        // Role + content rough estimate
+        estimate = estimate.saturating_add((msg.role.len() / 4 + 1) as u32);
+        for block in &msg.content {
+            let block_text = serde_json::to_string(block).unwrap_or_default();
+            estimate = estimate.saturating_add((block_text.len() / 4 + 1) as u32);
+        }
+    }
+
+    estimate
 }
 // Build-time constants injected by build.rs (fall back to static values when
 // build.rs hasn't run, e.g. in doc-test or unusual toolchain environments).
@@ -5431,11 +5473,19 @@ impl ApiClient for AnthropicRuntimeClient {
             progress_reporter.mark_model_phase();
         }
         let is_post_tool = request_ends_with_tool_result(&request);
+
+        // Convert messages and estimate input size for dynamic max_tokens calculation
+        let converted_messages = convert_messages(&request.messages);
+        let system_prompt_text = (!request.system_prompt.is_empty())
+            .then(|| request.system_prompt.join("\n\n"));
+        let estimated_input = estimate_request_input_tokens(&converted_messages, system_prompt_text.as_deref());
+        let dynamic_max_tokens = max_tokens_for_request(&self.model, estimated_input);
+
         let message_request = MessageRequest {
             model: self.model.clone(),
-            max_tokens: max_tokens_for_model(&self.model),
-            messages: convert_messages(&request.messages),
-            system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
+            max_tokens: dynamic_max_tokens,
+            messages: converted_messages,
+            system: system_prompt_text,
             tools: self
                 .enable_tools
                 .then(|| filter_tool_specs(&self.tool_registry, self.allowed_tools.as_ref())),
