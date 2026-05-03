@@ -5609,8 +5609,20 @@ async fn stream_with_provider(
                         input.push_str(&partial_json);
                     }
                 }
-                ContentBlockDelta::ThinkingDelta { .. }
-                | ContentBlockDelta::SignatureDelta { .. } => {}
+                ContentBlockDelta::ThinkingDelta { thinking } => {
+                    if !thinking.is_empty() {
+                        events.push(AssistantEvent::ThinkingDelta {
+                            thinking,
+                            signature: None,
+                        });
+                    }
+                }
+                ContentBlockDelta::SignatureDelta { signature } => {
+                    events.push(AssistantEvent::ThinkingDelta {
+                        thinking: String::new(),
+                        signature: Some(signature),
+                    });
+                }
             },
             ApiStreamEvent::ContentBlockStop(stop) => {
                 if let Some((id, name, input)) = pending_tools.remove(&stop.index) {
@@ -5633,6 +5645,7 @@ async fn stream_with_provider(
         && events.iter().any(|event| {
             matches!(event, AssistantEvent::TextDelta(text) if !text.is_empty())
                 || matches!(event, AssistantEvent::ToolUse { .. })
+                || matches!(event, AssistantEvent::ThinkingDelta { thinking, .. } if !thinking.is_empty())
         })
     {
         events.push(AssistantEvent::MessageStop);
@@ -5761,7 +5774,17 @@ fn push_output_block(
             };
             pending_tools.insert(block_index, (id, name, initial_input));
         }
-        OutputContentBlock::Thinking { .. } | OutputContentBlock::RedactedThinking { .. } => {}
+        OutputContentBlock::Thinking { thinking, signature } => {
+            if !thinking.is_empty() {
+                events.push(AssistantEvent::ThinkingDelta {
+                    thinking,
+                    signature,
+                });
+            }
+        }
+        OutputContentBlock::RedactedThinking { .. } => {
+            // Redacted thinking is intentionally not emitted as content
+        }
     }
 }
 

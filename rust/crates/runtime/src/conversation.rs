@@ -34,6 +34,8 @@ pub enum AssistantEvent {
         name: String,
         input: String,
     },
+    /// Thinking/reasoning content from the model (e.g., extended thinking blocks).
+    ThinkingDelta { thinking: String, signature: Option<String> },
     Usage(TokenUsage),
     PromptCache(PromptCacheEvent),
     MessageStop,
@@ -845,6 +847,8 @@ fn build_assistant_message(
     RuntimeError,
 > {
     let mut text = String::new();
+    let mut thinking = String::new();
+    let mut thinking_signature: Option<String> = None;
     let mut blocks = Vec::new();
     let mut prompt_cache_events = Vec::new();
     let mut finished = false;
@@ -853,8 +857,15 @@ fn build_assistant_message(
     for event in events {
         match event {
             AssistantEvent::TextDelta(delta) => text.push_str(&delta),
+            AssistantEvent::ThinkingDelta { thinking: delta, signature } => {
+                thinking.push_str(&delta);
+                if thinking_signature.is_none() {
+                    thinking_signature = signature;
+                }
+            }
             AssistantEvent::ToolUse { id, name, input } => {
                 flush_text_block(&mut text, &mut blocks);
+                flush_thinking_block(&mut thinking, &mut thinking_signature, &mut blocks);
                 blocks.push(ContentBlock::ToolUse { id, name, input });
             }
             AssistantEvent::Usage(value) => usage = Some(value),
@@ -866,13 +877,14 @@ fn build_assistant_message(
     }
 
     flush_text_block(&mut text, &mut blocks);
+    flush_thinking_block(&mut thinking, &mut thinking_signature, &mut blocks);
 
     if !finished {
         return Err(RuntimeError::new(
             "assistant stream ended without a message stop event",
         ));
     }
-    if blocks.is_empty() {
+    if blocks.is_empty() && thinking.is_empty() {
         return Err(RuntimeError::new("assistant stream produced no content"));
     }
 
@@ -888,6 +900,25 @@ fn flush_text_block(text: &mut String, blocks: &mut Vec<ContentBlock>) {
         blocks.push(ContentBlock::Text {
             text: std::mem::take(text),
         });
+    }
+}
+
+fn flush_thinking_block(
+    thinking: &mut String,
+    signature: &mut Option<String>,
+    blocks: &mut Vec<ContentBlock>,
+) {
+    if !thinking.is_empty() {
+        blocks.push(ContentBlock::Text {
+            text: format!("<thinking>{}</thinking>", std::mem::take(thinking)),
+        });
+    }
+    if let Some(sig) = signature.take() {
+        if !sig.is_empty() {
+            blocks.push(ContentBlock::Text {
+                text: format!("<thinking_signature>{sig}</thinking_signature>"),
+            });
+        }
     }
 }
 
@@ -1852,6 +1883,51 @@ mod tests {
         assert!(error
             .to_string()
             .contains("assistant stream produced no content"));
+    }
+
+    #[test]
+    fn build_assistant_message_accepts_thinking_content() {
+        // given
+        let events = vec![
+            AssistantEvent::ThinkingDelta {
+                thinking: "Let me analyze this step by step.".to_string(),
+                signature: None,
+            },
+            AssistantEvent::MessageStop,
+        ];
+
+        // when
+        let (message, _usage, _cache_events) =
+            build_assistant_message(events).expect("thinking content should be valid");
+
+        // then
+        assert!(!message.blocks.is_empty());
+        assert!(matches!(&message.blocks[0], ContentBlock::Text { text } if text.contains("<thinking>")));
+    }
+
+    #[test]
+    fn build_assistant_message_accepts_thinking_with_signature() {
+        // given
+        let events = vec![
+            AssistantEvent::ThinkingDelta {
+                thinking: "Deep reasoning process here.".to_string(),
+                signature: Some("signature123".to_string()),
+            },
+            AssistantEvent::MessageStop,
+        ];
+
+        // when
+        let (message, _usage, _cache_events) =
+            build_assistant_message(events).expect("thinking with signature should be valid");
+
+        // then
+        assert!(!message.blocks.is_empty());
+        assert!(
+            matches!(&message.blocks[0], ContentBlock::Text { text } if text.contains("<thinking>") && text.contains("Deep reasoning"))
+        );
+        assert!(
+            matches!(&message.blocks[1], ContentBlock::Text { text } if text.contains("<thinking_signature>signature123</thinking_signature>"))
+        );
     }
 
     #[test]

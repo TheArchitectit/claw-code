@@ -1145,6 +1145,9 @@ pub enum SlashCommand {
     Tasks {
         args: Option<String>,
     },
+    Team {
+        action: Option<String>,
+    },
     Theme {
         name: Option<String>,
     },
@@ -1197,9 +1200,6 @@ pub enum SlashCommand {
     Lsp {
         action: Option<String>,
         target: Option<String>,
-    },
-    Team {
-        action: Option<String>,
     },
     Unknown(String),
 }
@@ -1284,10 +1284,10 @@ impl SlashCommand {
             Self::Plan { .. } => "/plan",
             Self::Review { .. } => "/review",
             Self::Tasks { .. } => "/tasks",
+            Self::Team { .. } => "/team",
             Self::Theme { .. } => "/theme",
             Self::Voice { .. } => "/voice",
             Self::Usage { .. } => "/usage",
-            Self::Team { .. } => "/team",
             Self::Setup => "/setup",
             Self::Rename { .. } => "/rename",
             Self::Copy { .. } => "/copy",
@@ -4184,6 +4184,7 @@ pub fn handle_slash_command(
         | SlashCommand::Plan { .. }
         | SlashCommand::Review { .. }
         | SlashCommand::Tasks { .. }
+        | SlashCommand::Team { .. }
         | SlashCommand::Theme { .. }
         | SlashCommand::Voice { .. }
         | SlashCommand::Usage { .. }
@@ -4201,7 +4202,6 @@ pub fn handle_slash_command(
         | SlashCommand::AddDir { .. }
         | SlashCommand::History { .. }
         | SlashCommand::Lsp { .. }
-        | SlashCommand::Team { .. }
         | SlashCommand::Setup        | SlashCommand::Unknown(_) => None,
     }
 }
