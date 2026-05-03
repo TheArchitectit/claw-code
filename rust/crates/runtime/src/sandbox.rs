@@ -254,6 +254,13 @@ pub fn build_linux_sandbox_command(
         env.push(("PATH".to_string(), path));
     }
 
+    // Pass through GitHub CLI authentication environment variables
+    for gh_var in ["GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_ENTERPRISE_TOKEN"] {
+        if let Ok(value) = env::var(gh_var) {
+            env.push((gh_var.to_string(), value));
+        }
+    }
+
     Some(LinuxSandboxCommand {
         program: "unshare".to_string(),
         args,
