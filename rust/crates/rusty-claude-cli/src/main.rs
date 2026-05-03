@@ -83,10 +83,13 @@ use tools::{
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
 
 fn max_tokens_for_model(model: &str) -> u32 {
+    // Reserve more space for input context to avoid context window exhaustion.
+    // Claude 4 models have 128k context windows; reserving ~90k for input
+    // leaves a safe 32-40k for output without triggering context window errors.
     if model.contains("opus") {
         32_000
     } else {
-        64_000
+        40_000
     }
 }
 // Build-time constants injected by build.rs (fall back to static values when
