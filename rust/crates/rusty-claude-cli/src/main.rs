@@ -15,9 +15,9 @@
 )]
 mod init;
 mod input;
-mod tui;
 mod render;
 mod setup_wizard;
+mod tui;
 
 use std::collections::BTreeSet;
 use std::env;
@@ -1592,7 +1592,10 @@ fn config_model_for_current_dir() -> Option<String> {
     let cwd = env::current_dir().ok()?;
     let loader = ConfigLoader::default_for(&cwd);
     let config = loader.load().ok()?;
-    config.model().map(ToOwned::to_owned).or_else(|| config.provider().model().map(ToOwned::to_owned))
+    config
+        .model()
+        .map(ToOwned::to_owned)
+        .or_else(|| config.provider().model().map(ToOwned::to_owned))
 }
 
 fn resolve_repl_model(cli_model: String) -> String {
@@ -3488,7 +3491,8 @@ fn run_resume_command(
         | SlashCommand::AddDir { .. }
         | SlashCommand::Lsp { .. }
         | SlashCommand::Team { .. }
-        | SlashCommand::Setup => Err("unsupported resumed slash command".into()),    }
+        | SlashCommand::Setup => Err("unsupported resumed slash command".into()),
+    }
 }
 
 /// Detect if the current working directory is "broad" (home directory or
@@ -3591,9 +3595,23 @@ fn run_repl(
     allow_broad_cwd: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if io::stdout().is_terminal() {
-        return run_repl_tui(model, allowed_tools, permission_mode, base_commit, reasoning_effort, allow_broad_cwd);
+        return run_repl_tui(
+            model,
+            allowed_tools,
+            permission_mode,
+            base_commit,
+            reasoning_effort,
+            allow_broad_cwd,
+        );
     }
-    run_repl_classic(model, allowed_tools, permission_mode, base_commit, reasoning_effort, allow_broad_cwd)
+    run_repl_classic(
+        model,
+        allowed_tools,
+        permission_mode,
+        base_commit,
+        reasoning_effort,
+        allow_broad_cwd,
+    )
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3610,7 +3628,12 @@ fn run_repl_tui(
     let resolved_model = resolve_repl_model(model.clone());
     let reasoning_effort_clone = reasoning_effort.clone();
 
-    let mut cli = LiveCli::new(resolved_model.clone(), true, allowed_tools.clone(), permission_mode)?;
+    let mut cli = LiveCli::new(
+        resolved_model.clone(),
+        true,
+        allowed_tools.clone(),
+        permission_mode,
+    )?;
     let cwd = std::env::current_dir().unwrap_or_default();
     let lsp_auto = runtime::ConfigLoader::default_for(&cwd)
         .load()
@@ -3659,7 +3682,14 @@ fn run_repl_tui(
         Ok(app) => app,
         Err(e) => {
             eprintln!("TUI init failed, falling back to classic mode: {e}");
-            return run_repl_classic(model, allowed_tools, permission_mode, base_commit, reasoning_effort, allow_broad_cwd);
+            return run_repl_classic(
+                model,
+                allowed_tools,
+                permission_mode,
+                base_commit,
+                reasoning_effort,
+                allow_broad_cwd,
+            );
         }
     };
     // TUI banner — styled ASCII art with info lines
@@ -3669,26 +3699,64 @@ fn run_repl_tui(
             .as_ref()
             .and_then(|ctx| ctx.git_branch.as_deref())
             .unwrap_or("unknown");
-        let workspace = status.as_ref().map_or_else(
-            || "unknown".to_string(),
-            |ctx| ctx.git_summary.headline(),
-        );
+        let workspace = status
+            .as_ref()
+            .map_or_else(|| "unknown".to_string(), |ctx| ctx.git_summary.headline());
         let banner_lines = vec![
-            tui::BannerLine { text: " ██████╗██╗      █████╗ ██╗    ██╗".to_string(), color: ratatui::style::Color::Red },
-            tui::BannerLine { text: "██╔════╝██║     ██╔══██╗██║    ██║".to_string(), color: ratatui::style::Color::Red },
-            tui::BannerLine { text: "██║     ██║     ███████║██║ █╗ ██║".to_string(), color: ratatui::style::Color::Red },
-            tui::BannerLine { text: "██║     ██║     ██╔══██║██║███╗██║".to_string(), color: ratatui::style::Color::Red },
-            tui::BannerLine { text: "╚██████╗███████╗██║  ██║╚███╔███╔╝".to_string(), color: ratatui::style::Color::Red },
-            tui::BannerLine { text: " ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ Code".to_string(), color: ratatui::style::Color::Red },
-            tui::BannerLine { text: String::new(), color: ratatui::style::Color::White },
-            tui::BannerLine { text: format!("  Model       {}", cli.model), color: ratatui::style::Color::White },
-            tui::BannerLine { text: format!("  Mode        {}", permission_mode.as_str()), color: ratatui::style::Color::White },
-            tui::BannerLine { text: format!("  Branch      {}", git_branch), color: ratatui::style::Color::Green },
-            tui::BannerLine { text: format!("  Workspace   {}", workspace), color: ratatui::style::Color::White },
-            tui::BannerLine { text: format!("  Session     {}", cli.session.id), color: ratatui::style::Color::Gray },
-            tui::BannerLine { text: String::new(), color: ratatui::style::Color::White },
+            tui::BannerLine {
+                text: " ██████╗██╗      █████╗ ██╗    ██╗".to_string(),
+                color: ratatui::style::Color::Red,
+            },
+            tui::BannerLine {
+                text: "██╔════╝██║     ██╔══██╗██║    ██║".to_string(),
+                color: ratatui::style::Color::Red,
+            },
+            tui::BannerLine {
+                text: "██║     ██║     ███████║██║ █╗ ██║".to_string(),
+                color: ratatui::style::Color::Red,
+            },
+            tui::BannerLine {
+                text: "██║     ██║     ██╔══██║██║███╗██║".to_string(),
+                color: ratatui::style::Color::Red,
+            },
+            tui::BannerLine {
+                text: "╚██████╗███████╗██║  ██║╚███╔███╔╝".to_string(),
+                color: ratatui::style::Color::Red,
+            },
+            tui::BannerLine {
+                text: " ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ Code".to_string(),
+                color: ratatui::style::Color::Red,
+            },
+            tui::BannerLine {
+                text: String::new(),
+                color: ratatui::style::Color::White,
+            },
+            tui::BannerLine {
+                text: format!("  Model       {}", cli.model),
+                color: ratatui::style::Color::White,
+            },
+            tui::BannerLine {
+                text: format!("  Mode        {}", permission_mode.as_str()),
+                color: ratatui::style::Color::White,
+            },
+            tui::BannerLine {
+                text: format!("  Branch      {}", git_branch),
+                color: ratatui::style::Color::Green,
+            },
+            tui::BannerLine {
+                text: format!("  Workspace   {}", workspace),
+                color: ratatui::style::Color::White,
+            },
+            tui::BannerLine {
+                text: format!("  Session     {}", cli.session.id),
+                color: ratatui::style::Color::Gray,
+            },
+            tui::BannerLine {
+                text: String::new(),
+                color: ratatui::style::Color::White,
+            },
         ];
-        app.push_banner(banner_lines);
+        app.push_banner(&banner_lines);
     }
 
     // Main TUI event loop
@@ -3709,12 +3777,18 @@ fn run_repl_tui(
                 }
                 match SlashCommand::parse(&trimmed) {
                     Ok(Some(command)) => {
+                        app.suspend()?;
                         let cmd_result = cli.handle_repl_command(command);
                         if let Ok(true) = cmd_result {
-                            cli.persist_session()?;
+                            let _ = cli.persist_session();
                         }
                         if let Err(e) = cmd_result {
                             app.push_system_message(&format!("Command error: {e}"));
+                        }
+                        if let Err(e) = app.resume() {
+                            eprintln!("TUI resume failed: {e}");
+                            let _ = app.restore_terminal();
+                            return Err(e);
                         }
                         continue;
                     }
@@ -3735,10 +3809,15 @@ fn run_repl_tui(
                 update_dashboard(&dashboard_state, &cli);
                 app.set_status("Thinking...");
 
-                // Run turn in-place. Output goes to the alternate screen buffer
-                // which ratatui owns - it will be overwritten on next redraw.
-                // This avoids the fragile suspend/resume pattern.
+                // Suspend TUI to normal terminal, run turn, then resume
+                // This prevents TUI lockup from stdout mixed with ratatui rendering
+                app.suspend()?;
                 let result = cli.run_turn(&prompt);
+                if let Err(e) = app.resume() {
+                    eprintln!("TUI resume failed: {e}, restoring terminal...");
+                    let _ = app.restore_terminal();
+                    return Err(e);
+                }
 
                 // Read the last assistant message from the session for the conversation pane
                 {
@@ -3769,14 +3848,21 @@ fn run_repl_tui(
                 update_dashboard(&dashboard_state, &cli);
             }
             tui::TuiReadOutcome::ProviderSwap => {
-                // Provider swap wizard needs interactive terminal
-                let _ = app.restore_terminal();
+                app.suspend()?;
                 println!();
                 setup_wizard::run_setup_wizard()?;
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let config = runtime::ConfigLoader::default_for(&cwd).load().ok();
-                if let Some(new_model) = config.as_ref().and_then(|c| c.provider().model().map(str::to_string)) {
-                    let _ = cli.set_model(Some(new_model));
+                if let Some(new_model) = config
+                    .as_ref()
+                    .and_then(|c| c.provider().model().map(str::to_string))
+                {
+                    cli.set_model(Some(new_model))?;
+                }
+                if let Err(e) = app.resume() {
+                    eprintln!("TUI resume failed: {e}");
+                    let _ = app.restore_terminal();
+                    return Err(e);
                 }
                 app.push_system_message("Provider updated - restart for full effect");
                 update_dashboard(&dashboard_state, &cli);
@@ -3876,10 +3962,15 @@ fn run_repl_classic(
                 missing.push("subagentModel");
             }
             if !missing.is_empty() {
-                eprintln!("
-  [33mWarning: Missing config fields:[0m {}", missing.join(", "));
-                eprintln!("  [2mRun [1mclaw setup[0m[2m or type [1m/setup[0m[2m to configure.[0m
-");
+                eprintln!(
+                    "
+  [33mWarning: Missing config fields:[0m {}",
+                    missing.join(", ")
+                );
+                eprintln!(
+                    "  [2mRun [1mclaw setup[0m[2m or type [1m/setup[0m[2m to configure.[0m
+"
+                );
             }
         }
     }
@@ -3910,7 +4001,9 @@ fn run_repl_classic(
         } else {
             let names: Vec<&str> = lsp_servers.iter().map(|s| s.language.as_str()).collect();
             eprintln!("  Available but not started: {}", names.join(", "));
-            eprintln!("  Start with: /lsp start <language> or set lspAutoStart=true in settings.json");
+            eprintln!(
+                "  Start with: /lsp start <language> or set lspAutoStart=true in settings.json"
+            );
         }
     }
 
@@ -3959,7 +4052,10 @@ fn run_repl_classic(
                 setup_wizard::run_setup_wizard()?;
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let config = runtime::ConfigLoader::default_for(&cwd).load().ok();
-                if let Some(new_model) = config.as_ref().and_then(|c| c.provider().model().map(str::to_string)) {
+                if let Some(new_model) = config
+                    .as_ref()
+                    .and_then(|c| c.provider().model().map(str::to_string))
+                {
                     cli.set_model(Some(new_model))?;
                 }
                 println!("{}", format_connected_line(&cli.model));
@@ -4653,7 +4749,7 @@ impl LiveCli {
                     TerminalRenderer::new().color_theme(),
                     &mut stdout,
                 )?;
-                
+
                 // ============================================================================
                 // Auto-compact retry on context window errors
                 // ============================================================================
@@ -4672,12 +4768,12 @@ impl LiveCli {
                 // - "Context window blocked"
                 // - "This model's maximum context length is X tokens..."
                 // ============================================================================
-                
+
                 let error_str = error.to_string();
                 let is_context_window = error_str.contains("context_window")
                     || error_str.contains("Context window")
                     || error_str.contains("no parseable body");
-                
+
                 if is_context_window {
                     // Progressive auto-compact retry loop:
                     // Each round compacts more aggressively (fewer preserved messages)
@@ -4685,7 +4781,7 @@ impl LiveCli {
                     // Max 4 rounds of compaction before giving up.
                     let max_compact_rounds = 4;
                     let preserve_schedule = [4, 2, 1, 0];
-                    
+
                     for round in 0..max_compact_rounds {
                         let preserve = preserve_schedule[round];
                         println!(
@@ -4694,7 +4790,7 @@ impl LiveCli {
                             max_compact_rounds,
                             preserve
                         );
-                        
+
                         // Run Trident pipeline then summary-based compaction
                         let result = runtime::trident::trident_compact_session(
                             runtime.session(),
@@ -4705,37 +4801,52 @@ impl LiveCli {
                             &runtime::trident::TridentConfig::default(),
                         );
                         let removed = result.removed_message_count;
-                        
+
                         if removed == 0 && round > 0 {
                             // No more messages to compact — further rounds won't help
                             println!("  No further compaction possible.");
                             break;
                         }
-                        
+
                         if removed > 0 {
-                            println!("{}", format_compact_report(removed, result.compacted_session.messages.len(), false));
+                            println!(
+                                "{}",
+                                format_compact_report(
+                                    removed,
+                                    result.compacted_session.messages.len(),
+                                    false
+                                )
+                            );
                         }
-                        
+
                         // Replace self.runtime's session with the compacted version
                         // so prepare_turn_runtime builds from the compacted session
                         *self.runtime.session_mut() = result.compacted_session.clone();
-                        
+
                         // Build a new runtime with the compacted session and retry
-                        let (mut new_runtime, hook_abort_monitor) = self.prepare_turn_runtime(true)?;
+                        let (mut new_runtime, hook_abort_monitor) =
+                            self.prepare_turn_runtime(true)?;
                         drop(hook_abort_monitor);
-                        
+
                         let mut rp = CliPermissionPrompter::new(self.permission_mode);
                         match new_runtime.run_turn(input, Some(&mut rp)) {
                             Ok(summary) => {
                                 self.replace_runtime(new_runtime)?;
                                 spinner.finish(
-                                    if round == 0 { "✨ Done (after auto-compact)" } else { "✨ Done (after aggressive auto-compact)" },
+                                    if round == 0 {
+                                        "✨ Done (after auto-compact)"
+                                    } else {
+                                        "✨ Done (after aggressive auto-compact)"
+                                    },
                                     TerminalRenderer::new().color_theme(),
                                     &mut stdout,
                                 )?;
                                 println!();
                                 if let Some(event) = summary.auto_compaction {
-                                    println!("{}", format_auto_compaction_notice(event.removed_message_count));
+                                    println!(
+                                        "{}",
+                                        format_auto_compaction_notice(event.removed_message_count)
+                                    );
                                 }
                                 self.persist_session()?;
                                 return Ok(());
@@ -4745,21 +4856,21 @@ impl LiveCli {
                                 let still_context_window = retry_str.contains("context_window")
                                     || retry_str.contains("Context window")
                                     || retry_str.contains("no parseable body");
-                                
+
                                 if still_context_window && round + 1 < max_compact_rounds {
                                     // Still too large — compact more aggressively next round
                                     runtime.shutdown_plugins()?;
                                     runtime = new_runtime;
                                     continue;
                                 }
-                                
+
                                 // Not a context window error, or out of rounds
                                 return Err(Box::new(retry_error));
                             }
                         }
                     }
                 }
-                
+
                 // If not a context window error, return original error
                 Err(Box::new(error))
             }
@@ -4951,7 +5062,9 @@ impl LiveCli {
                         if current == "1" {
                             eprintln!("[team] Agent teams: ENABLED");
                         } else {
-                            eprintln!("[team] Agent teams: DISABLED (use /team on or Ctrl+T to enable)");
+                            eprintln!(
+                                "[team] Agent teams: DISABLED (use /team on or Ctrl+T to enable)"
+                            );
                         }
                     }
                     "" => {
@@ -4965,7 +5078,9 @@ impl LiveCli {
                             eprintln!("[team] Agent teams enabled (TeamCreate now available)");
                         }
                     }
-                    other => eprintln!("[team] unknown action: {other}. Use: /team [on|off|status]"),
+                    other => {
+                        eprintln!("[team] unknown action: {other}. Use: /team [on|off|status]")
+                    }
                 }
                 false
             }
@@ -4974,7 +5089,10 @@ impl LiveCli {
                 // Reload the model from config after wizard saves
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let config = runtime::ConfigLoader::default_for(&cwd).load().ok();
-                if let Some(new_model) = config.as_ref().and_then(|c| c.provider().model().map(str::to_string)) {
+                if let Some(new_model) = config
+                    .as_ref()
+                    .and_then(|c| c.provider().model().map(str::to_string))
+                {
                     self.set_model(Some(new_model))?;
                 }
                 false
@@ -9399,10 +9517,11 @@ impl ToolExecutor for CliToolExecutor {
             "LSP",
             "Agent",
             "AgentMessage",
-                        "TeamStatus",
+            "TeamStatus",
             "TaskClaim",
             "AgentSuggestion",
-            "ContextRequest", "TaskGet",
+            "ContextRequest",
+            "TaskGet",
             "TaskList",
             "TaskOutput",
             "GitStatus",
@@ -9459,12 +9578,11 @@ impl ToolExecutor for CliToolExecutor {
                         let input = input.clone();
                         let idx = *idx;
                         handles.push(s.spawn(move || {
-                            let value = serde_json::from_str(&input)
-                                .map_err(|error| ToolError::new(format!("invalid tool input JSON: {error}")));
+                            let value = serde_json::from_str(&input).map_err(|error| {
+                                ToolError::new(format!("invalid tool input JSON: {error}"))
+                            });
                             let result = match value {
-                                Ok(v) => registry
-                                    .execute(&tool_name, &v)
-                                    .map_err(ToolError::new),
+                                Ok(v) => registry.execute(&tool_name, &v).map_err(ToolError::new),
                                 Err(e) => Err(e),
                             };
                             (idx, tool_use_id, tool_name, result)
@@ -9472,14 +9590,16 @@ impl ToolExecutor for CliToolExecutor {
                     }
                     handles
                         .into_iter()
-                        .map(|h| h.join().unwrap_or_else(|_| {
-                            (
-                                0,
-                                String::new(),
-                                String::new(),
-                                Err(ToolError::new("parallel thread panicked")),
-                            )
-                        }))
+                        .map(|h| {
+                            h.join().unwrap_or_else(|_| {
+                                (
+                                    0,
+                                    String::new(),
+                                    String::new(),
+                                    Err(ToolError::new("parallel thread panicked")),
+                                )
+                            })
+                        })
                         .collect()
                 });
 
@@ -9951,7 +10071,7 @@ mod tests {
                 retryable: false,
                 suggested_action: None,
                 retry_after: None,
-}),
+            }),
         };
 
         let rendered = format_user_visible_api_error("session-issue-32", &error);
