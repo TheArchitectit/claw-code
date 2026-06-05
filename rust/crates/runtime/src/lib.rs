@@ -21,6 +21,15 @@ mod hooks;
 mod json;
 mod lane_events;
 pub mod lsp_client;
+pub mod lsp_discovery;
+pub mod lsp_process;
+pub mod lsp_transport;
+pub use lsp_discovery::{
+    check_lsp_availability, command_exists_on_path, discover_available_servers,
+    format_install_prompt, known_lsp_servers, InstallInstruction, LinuxDistro,
+    LspInstallAction, LspServerDescriptor,
+};
+
 mod mcp;
 mod mcp_client;
 pub mod mcp_lifecycle_hardened;
