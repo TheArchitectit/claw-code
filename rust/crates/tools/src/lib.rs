@@ -17,7 +17,7 @@ use reqwest::blocking::Client;
 use runtime::{
     check_freshness, dedupe_superseded_commit_events, edit_file_in_workspace, execute_bash,
     glob_search_in_workspace, grep_search_in_workspace, load_system_prompt,
-    lsp_client::LspRegistry,
+    lsp_client::{LspDiagnostic, LspRegistry},
     mcp_tool_bridge::McpToolRegistry,
     permission_enforcer::{EnforcementResult, PermissionEnforcer},
     read_file_in_workspace,
@@ -1169,11 +1169,11 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "LSP",
-            description: "Query Language Server Protocol for code intelligence (symbols, references, diagnostics).",
+            description: "Query Language Server Protocol for code intelligence (symbols, references, diagnostics, code actions, rename, signature help, code lens, workspace symbols).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["symbols", "references", "diagnostics", "definition", "hover"] },
+                    "action": { "type": "string", "enum": ["symbols", "references", "diagnostics", "definition", "hover", "code_action", "rename", "signature_help", "code_lens", "workspace_symbols"] },
                     "path": { "type": "string" },
                     "line": { "type": "integer", "minimum": 0 },
                     "character": { "type": "integer", "minimum": 0 },
@@ -10889,4 +10889,39 @@ printf 'pwsh:%s' "$1"
             .into_bytes()
         }
     }
+}
+
+// LSP enrichment helpers
+enum LspEvent {
+    Open,
+    Change,
+}
+
+fn lsp_enrichment_for_path(path: &str, event: &LspEvent) -> Option<Vec<LspDiagnostic>> {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    lsp_enrichment_for_path_with_content(path, &content, event)
+}
+
+fn lsp_enrichment_for_path_with_content(
+    path: &str,
+    content: &str,
+    event: &LspEvent,
+) -> Option<Vec<LspDiagnostic>> {
+    let mut registry = LspRegistry::new();
+    let diags = match event {
+        LspEvent::Open => registry.notify_file_open(path, content),
+        LspEvent::Change => registry.notify_file_change(path, content),
+    };
+    if diags.is_empty() { None } else { Some(diags) }
+}
+
+fn format_diagnostic_appendix(diagnostics: &[LspDiagnostic]) -> String {
+    let mut result = String::from("\n=== LSP Diagnostics ===\n");
+    for diag in diagnostics {
+        result.push_str(&format!("[{}] {}\n", diag.severity, diag.message));
+        if let Some(source) = &diag.source {
+            result.push_str(&format!("  source: {}\n", source));
+        }
+    }
+    result
 }

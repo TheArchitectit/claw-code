@@ -146,6 +146,13 @@ impl Default for ApiTimeoutConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspServerConfig {
+    pub command: String,
+    pub args: Vec<String>,
+    pub enabled: bool,
+}
+
 /// Structured feature configuration consumed by runtime subsystems.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RuntimeFeatureConfig {
@@ -162,6 +169,8 @@ pub struct RuntimeFeatureConfig {
     trusted_roots: Vec<String>,
     api_timeout: ApiTimeoutConfig,
     rules_import: RulesImportConfig,
+    lsp_auto_start: bool,
+    lsp: BTreeMap<String, LspServerConfig>,
 }
 
 /// Controls which external AI coding framework rules are imported into the system prompt.
@@ -764,6 +773,12 @@ fn build_runtime_config(
         trusted_roots: parse_optional_trusted_roots(&merged_value)?,
         api_timeout: parse_optional_api_timeout_config(&merged_value)?,
         rules_import: parse_optional_rules_import(&merged_value)?,
+        lsp_auto_start: merged_value
+            .as_object()
+            .and_then(|o| o.get("lspAutoStart"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        lsp: parse_optional_lsp_config(&merged_value)?,
     };
 
     Ok(RuntimeConfig {
@@ -885,12 +900,31 @@ impl RuntimeConfig {
     /// removed without reordering the first occurrence so evidence remains
     /// deterministic while avoiding repeated trust checks.
     #[must_use]
+    pub fn lsp(&self) -> &BTreeMap<String, LspServerConfig> {
+        &self.feature_config.lsp
+    }
+
+    #[must_use]
+    pub fn lsp_auto_start(&self) -> bool {
+        self.feature_config.lsp_auto_start
+    }
+
     pub fn trusted_roots_with_overrides(&self, per_call_roots: &[String]) -> Vec<String> {
         merge_trusted_roots(self.trusted_roots(), per_call_roots)
     }
 }
 
 impl RuntimeFeatureConfig {
+    #[must_use]
+    pub fn lsp(&self) -> &BTreeMap<String, LspServerConfig> {
+        &self.lsp
+    }
+
+    #[must_use]
+    pub fn lsp_auto_start(&self) -> bool {
+        self.lsp_auto_start
+    }
+
     #[must_use]
     pub fn with_hooks(mut self, hooks: RuntimeHookConfig) -> Self {
         self.hooks = hooks;
@@ -2071,6 +2105,35 @@ fn parse_optional_trusted_roots(root: &JsonValue) -> Result<Vec<String>, ConfigE
         optional_string_array(object, "trustedRoots", "merged settings.trustedRoots")?
             .unwrap_or_default(),
     )
+}
+
+fn parse_optional_lsp_config(
+    root: &JsonValue,
+) -> Result<BTreeMap<String, LspServerConfig>, ConfigError> {
+    let Some(lsp_value) = root.as_object().and_then(|object| object.get("lsp")) else {
+        return Ok(BTreeMap::new());
+    };
+    let lsp_object = expect_object(lsp_value, "merged settings.lsp")?;
+    let mut result = BTreeMap::new();
+    for (language, value) in lsp_object {
+        let entry = expect_object(value, &format!("merged settings.lsp.{language}"))?;
+        let command =
+            expect_string(entry, "command", &format!("merged settings.lsp.{language}"))?.to_owned();
+        let args =
+            optional_string_array(entry, "args", &format!("merged settings.lsp.{language}"))?
+                .unwrap_or_default();
+        let enabled = optional_bool(entry, "enabled", &format!("merged settings.lsp.{language}"))?
+            .unwrap_or(true);
+        result.insert(
+            language.clone(),
+            LspServerConfig {
+                command,
+                args,
+                enabled,
+            },
+        );
+    }
+    Ok(result)
 }
 
 fn parse_optional_rules_import(root: &JsonValue) -> Result<RulesImportConfig, ConfigError> {

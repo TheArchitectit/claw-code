@@ -53,11 +53,14 @@ use init::initialize_repo;
 use plugins::{PluginHooks, PluginManager, PluginManagerConfig, PluginRegistry};
 use render::{MarkdownStreamState, Spinner, TerminalRenderer};
 use runtime::{
-    check_base_commit, format_stale_base_warning, format_usd, load_oauth_credentials,
+    check_base_commit, check_lsp_availability, command_exists_on_path,
+    discover_available_servers, format_install_prompt, format_stale_base_warning, format_usd,
+    known_lsp_servers, load_oauth_credentials,
     load_system_prompt, load_system_prompt_with_context, pricing_for_model, resolve_expected_base,
     resolve_sandbox_status, ApiClient, ApiRequest, AssistantEvent, BaseCommitState,
     CompactionConfig, ConfigFileReport, ConfigLoader, ConfigSource, ContentBlock, ContextFile,
-    ConversationMessage, ConversationRuntime, McpConfigCollection, McpInvalidServerConfig,
+    ConversationMessage, ConversationRuntime, LspInstallAction, LspServerDescriptor,
+    McpConfigCollection, McpInvalidServerConfig,
     McpServer, McpServerManager, McpServerSpec, McpTool, MessageRole, ModelPricing, PermissionMode,
     PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError,
     RuntimeInvalidHookConfig, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
@@ -6888,6 +6891,7 @@ fn run_resume_command(
         | SlashCommand::Tag { .. }
         | SlashCommand::OutputStyle { .. }
         | SlashCommand::AddDir { .. }
+        | SlashCommand::Lsp { .. }
         | SlashCommand::Team { .. } => Err("unsupported resumed slash command".into()),
     }
 }
@@ -8196,6 +8200,7 @@ impl LiveCli {
             | SlashCommand::Tag { .. }
             | SlashCommand::OutputStyle { .. }
             | SlashCommand::AddDir { .. }
+            | SlashCommand::Lsp { .. }
             | SlashCommand::Team { .. } => {
                 let cmd_name = command.slash_name();
                 eprintln!("{cmd_name} is not yet implemented in this build.");
