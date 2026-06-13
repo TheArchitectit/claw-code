@@ -18,6 +18,8 @@ mod init;
 mod input;
 mod render;
 mod setup_wizard;
+#[allow(dead_code)]
+mod tui;
 
 use std::collections::BTreeSet;
 use std::env;
@@ -472,6 +474,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             reasoning_effort,
             allow_broad_cwd,
         )?,
+        CliAction::Tui { output_format: _ } => {
+            #[allow(clippy::question_mark)]
+            if let Err(e) = tui::run() {
+                return Err(e.into());
+            }
+        }
         CliAction::HelpTopic(topic) => print_help_topic(topic),
         CliAction::Help { output_format } => print_help(output_format)?,
     }
