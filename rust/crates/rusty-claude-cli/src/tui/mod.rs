@@ -3,6 +3,11 @@
 //! This module is gated behind the `tui` Cargo feature. When the feature is not
 //! enabled, `claw tui` prints a help message and exits cleanly.
 
+#[cfg(feature = "tui")]
+mod app;
+#[cfg(feature = "tui")]
+mod event;
+
 use std::io;
 
 pub fn run() -> io::Result<()> {
@@ -33,21 +38,16 @@ fn run_tui() -> io::Result<()> {
 fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
 ) -> io::Result<()> {
-    use crossterm::event::{self, Event, KeyCode};
-    use ratatui::widgets::{Block, Borders, Paragraph};
+    let mut app = app::App::new();
 
     loop {
-        terminal.draw(|f| {
-            let area = f.area();
-            let paragraph = Paragraph::new("Hello, claw!")
-                .block(Block::default().borders(Borders::ALL).title("claw TUI"));
-            f.render_widget(paragraph, area);
-        })?;
+        terminal.draw(|f| app.draw(f))?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.code == KeyCode::Char('q') {
-                return Ok(());
-            }
+        let event = event::next_event()?;
+        app.handle_event(event);
+
+        if app.should_quit {
+            return Ok(());
         }
     }
 }

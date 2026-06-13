@@ -1,6 +1,7 @@
 //! Event broker: translates crossterm events into application events.
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use std::io;
 
 /// Application-level events consumed by the TUI state machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +25,7 @@ pub enum AppEvent {
 /// Read the next crossterm event and translate it into an `AppEvent`.
 ///
 /// This function blocks until an event is available.
-pub fn next_event() -> crossterm::Result<AppEvent> {
+pub fn next_event() -> io::Result<AppEvent> {
     match event::read()? {
         Event::Resize(cols, rows) => Ok(AppEvent::Resize(cols, rows)),
         Event::Key(key) => {
