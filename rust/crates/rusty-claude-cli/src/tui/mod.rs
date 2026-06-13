@@ -52,12 +52,29 @@ fn run_app<B: ratatui::backend::Backend>(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tui"))]
 mod tests {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    use super::app::App;
+
     #[test]
-    fn test_tui_stub_disabled_without_feature() {
-        // When the tui feature is NOT enabled, run() returns an error.
-        // This test verifies the stub path compiles correctly.
-        // The actual TUI tests are compiled only with --features tui.
+    fn test_tui_app_renders_to_buffer() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let app = App::new();
+        terminal.draw(|f| app.draw(f)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("Welcome to claw TUI"));
+    }
+
+    #[test]
+    fn test_tui_app_quits_on_q() {
+        let mut app = App::new();
+        assert!(!app.should_quit);
+        app.handle_event(super::event::AppEvent::Quit);
+        assert!(app.should_quit);
     }
 }
