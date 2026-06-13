@@ -158,6 +158,9 @@ pub enum CliAction {
     Setup {
         output_format: CliOutputFormat,
     },
+    Tui {
+        output_format: CliOutputFormat,
+    },
 }
 
 /// Local help topics for subcommand help.
@@ -631,6 +634,7 @@ pub fn parse_single_word_command_alias(
         "doctor" => Some(Ok(CliAction::Doctor { output_format })),
         "state" => Some(Ok(CliAction::State { output_format })),
         "setup" => Some(Ok(CliAction::Setup { output_format })),
+        "tui" => Some(Ok(CliAction::Tui { output_format })),
         "config" | "diff" => None,
         other => bare_slash_command_guidance(other).map(Err),
     }
