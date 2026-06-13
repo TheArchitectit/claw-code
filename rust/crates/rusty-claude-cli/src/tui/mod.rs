@@ -29,27 +29,80 @@ pub fn run() -> io::Result<()> {
 #[cfg(feature = "tui")]
 fn run_tui() -> io::Result<()> {
     let mut terminal = ratatui::init();
-    let result = run_app(&mut terminal);
+    let result = tokio::runtime::Handle::try_current()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+        .block_on(run_app_async(&mut terminal));
     ratatui::restore();
     result
 }
 
 #[cfg(feature = "tui")]
-fn run_app<B: ratatui::backend::Backend>(
+async fn run_app_async<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
 ) -> io::Result<()> {
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::channel::<event::AppEvent>(100);
     let mut app = app::App::new();
 
     loop {
         terminal.draw(|f| app.draw(f))?;
 
-        let event = event::next_event()?;
-        app.handle_event(event);
+        tokio::select! {
+            crossterm_event = read_crossterm_event_async() => {
+                let app_event = crossterm_event?;
+                app.handle_event(app_event.clone());
 
-        if app.should_quit {
-            return Ok(());
+                if matches!(app_event, event::AppEvent::Quit) {
+                    return Ok(());
+                }
+
+                // On Enter with non-empty input, start streaming
+                if let event::AppEvent::Key(key) = &app_event {
+                    use crossterm::event::KeyCode;
+                    if key.code == KeyCode::Enter && !app.input_text.trim().is_empty() {
+                        let tx_clone = tx.clone();
+                        let input = app.input_text.clone();
+                        tokio::spawn(async move {
+                            stream_mock_response(input, tx_clone).await;
+                        });
+                    }
+                }
+            }
+            Some(channel_event) = rx.recv() => {
+                app.handle_event(channel_event);
+            }
         }
     }
+}
+
+#[cfg(feature = "tui")]
+async fn read_crossterm_event_async() -> io::Result<event::AppEvent> {
+    tokio::task::spawn_blocking(|| event::next_event())
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+}
+
+#[cfg(feature = "tui")]
+async fn stream_mock_response(_input: String, tx: tokio::sync::mpsc::Sender<event::AppEvent>) {
+    use event::AppEvent;
+
+    // Simulate typing a response word by word
+    let words = ["Hello", "from", "the", "claw", "TUI!", "This", "is", "a", "streaming", "response."];
+
+    // Small delay before starting
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+    // Send a start signal (add assistant message cell)
+    let _ = tx.send(AppEvent::AssistantDelta("".to_string())).await;
+
+    for word in words {
+        let _ = tx.send(AppEvent::AssistantDelta(format!(" {word}"))).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    // Final newline to complete
+    let _ = tx.send(AppEvent::AssistantDelta("\n".to_string())).await;
 }
 
 #[cfg(all(test, feature = "tui"))]
