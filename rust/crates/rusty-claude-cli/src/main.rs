@@ -7417,38 +7417,90 @@ fn run_tui_repl(mut cli: LiveCli) -> Result<(), Box<dyn std::error::Error>> {
                         let needs_interactive = is_setup
                             || matches!(command, SlashCommand::Permissions { .. });
 
-                        // Only leave alternate screen for commands that need
-                        // interactive terminal access (permissions prompts,
-                        // setup wizard).  Leaving and re-entering breaks
-                        // gag-based stdout capture, so for normal commands
-                        // (like /status, /model, /team, /help) we stay in the
-                        // TUI and capture output directly.
                         if needs_interactive {
+                            // Interactive commands (/setup, /permissions) need
+                            // the real terminal for user prompts.  Leave alt
+                            // screen, run uncaptured, re-enter, and push any
+                            // captured tail output.
                             app.leave_for_turn()?;
+
+                            let (result, stdout, stderr) =
+                                crate::tui::capture::capture_output(|| {
+                                    cli.handle_repl_command(command)
+                                });
+                            let should_persist = result?;
+
+                            app.reenter_after_turn()?;
+
+                            if should_persist {
+                                cli.persist_session()?;
+                            }
+                            if !stdout.is_empty() {
+                                app.push_system_message(
+                                    &crate::tui_update::strip_ansi(&stdout),
+                                );
+                            }
+                            if !stderr.is_empty() {
+                                app.push_system_message(&format!(
+                                    "Error output:\n{}",
+                                    crate::tui_update::strip_ansi(&stderr)
+                                ));
+                            }
+                            if is_setup {
+                                let cwd = std::env::current_dir().unwrap_or_default();
+                                let config =
+                                    runtime::ConfigLoader::default_for(&cwd).load().ok();
+                                let model = config
+                                    .as_ref()
+                                    .and_then(|c| c.provider().model())
+                                    .unwrap_or(&cli.model);
+                                let provider = config
+                                    .as_ref()
+                                    .and_then(|c| c.provider().kind())
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| {
+                                        std::env::var("CLAWD_PROVIDER")
+                                            .unwrap_or_else(|_| "custom".to_string())
+                                    });
+                                app.push_system_message(&format!(
+                                    "Setup complete. Provider: {}  Model: {}",
+                                    provider, model
+                                ));
+                            }
+                            update_dashboard(&dashboard_state, &cli);
+                            let _ = app.redraw_after_turn();
+                            continue;
                         }
 
-                        // Capture stdout/stderr so command output survives
-                        // the alternate-screen swap (if we left) or stays
-                        // in-memory (if we didn't).
-                        let (result, stdout, stderr) = crate::tui::capture::capture_output(|| {
-                            cli.handle_repl_command(command)
-                        });
+                        // Non-interactive commands (/status, /help, /model,
+                        // /team, /diff, etc.): stay in the TUI, capture
+                        // stdout/stderr in-memory via gag, and push the
+                        // result into the conversation pane.  This avoids
+                        // the leave→capture→reenter cycle that breaks gag
+                        // (the fd redirect can't survive the alt-screen
+                        // transition).
+                        let (result, stdout, stderr) =
+                            crate::tui::capture::capture_output(|| {
+                                cli.handle_repl_command(command)
+                            });
                         let should_persist = result?;
 
-                        if needs_interactive {
-                            app.reenter_after_turn()?;
-                        }
-
-                        // `true` means the runtime/session was mutated
-                        // (e.g. /permissions, /model), not that we should
-                        // leave the TUI. Persist and stay in dashboard mode.
                         if should_persist {
                             cli.persist_session()?;
                         }
-
-                        // Push captured command output into the conversation pane.
                         if !stdout.is_empty() {
-                            app.push_system_message(&crate::tui_update::strip_ansi(&stdout));
+                            app.push_system_message(
+                                &crate::tui_update::strip_ansi(&stdout),
+                            );
+                        } else {
+                            // Some commands return Ok(false) and print nothing
+                            // (e.g. /status calls print_status which uses
+                            // println!, captured by gag).  If gag failed
+                            // (empty output), show a fallback.
+                            app.push_system_message(&format!(
+                                "Command '{}' executed.",
+                                trimmed.split_whitespace().next().unwrap_or(&trimmed)
+                            ));
                         }
                         if !stderr.is_empty() {
                             app.push_system_message(&format!(
@@ -7456,29 +7508,6 @@ fn run_tui_repl(mut cli: LiveCli) -> Result<(), Box<dyn std::error::Error>> {
                                 crate::tui_update::strip_ansi(&stderr)
                             ));
                         }
-
-                        // /setup doesn't print a tidy summary; give the user one.
-                        if is_setup {
-                            let cwd = std::env::current_dir().unwrap_or_default();
-                            let config = runtime::ConfigLoader::default_for(&cwd).load().ok();
-                            let model = config
-                                .as_ref()
-                                .and_then(|c| c.provider().model())
-                                .unwrap_or(&cli.model);
-                            let provider = config
-                                .as_ref()
-                                .and_then(|c| c.provider().kind())
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| {
-                                    std::env::var("CLAWD_PROVIDER")
-                                        .unwrap_or_else(|_| "custom".to_string())
-                                });
-                            app.push_system_message(&format!(
-                                "Setup complete. Provider: {}  Model: {}",
-                                provider, model
-                            ));
-                        }
-
                         update_dashboard(&dashboard_state, &cli);
                         let _ = app.redraw_after_turn();
                         continue;
