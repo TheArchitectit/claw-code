@@ -143,6 +143,9 @@ pub struct TuiApp {
     // Lifecycle
     should_exit: bool,
     spinner_frame: usize,
+
+    // Cached from last draw pass so scroll actions can clamp correctly
+    last_conversation_area: Option<ratatui::layout::Rect>,
 }
 
 impl TuiApp {
@@ -170,6 +173,7 @@ impl TuiApp {
             event_bus: EventBus::new(),
             should_exit: false,
             spinner_frame: 0,
+            last_conversation_area: None,
             terminal,
             guard,
         };
@@ -407,7 +411,14 @@ impl TuiApp {
                 self.command_palette.open_top();
                 Ok(TuiReadOutcome::Pending)
             }
-            Action::ToggleAgentView => Ok(TuiReadOutcome::ToggleAgentView),
+            Action::ToggleAgentView => {
+                if self.agent_view.is_active() {
+                    self.agent_view.close();
+                } else {
+                    self.agent_view.open();
+                }
+                Ok(TuiReadOutcome::Pending)
+            }
             Action::Help => {
                 let preset = self.key_preset_name().to_string();
                 let msg = format!("Keybindings ({preset}):\n\nEnter Submit  Shift+Enter ↵\nCtrl+C clear input (opens commands when empty)  Ctrl+D Exit\nCtrl+P Swap  Ctrl+K Palette (includes /slash commands)\nCtrl+Shift+D Top/dangerous commands  Ctrl+A Agents  Ctrl+T Team\n");
@@ -420,18 +431,27 @@ impl TuiApp {
             }
             Action::ScrollUp => {
                 self.conversation.scroll_up(1);
+                // Clamp after scroll to prevent going off-screen
+                let height = self.last_conversation_area.map(|r| r.height).unwrap_or(20);
+                self.conversation.clamp_scroll(height, &self.theme);
                 Ok(TuiReadOutcome::Pending)
             }
             Action::ScrollDown => {
                 self.conversation.scroll_down(1);
+                let height = self.last_conversation_area.map(|r| r.height).unwrap_or(20);
+                self.conversation.clamp_scroll(height, &self.theme);
                 Ok(TuiReadOutcome::Pending)
             }
             Action::ScrollHalfUp => {
                 self.conversation.scroll_up(5);
+                let height = self.last_conversation_area.map(|r| r.height).unwrap_or(20);
+                self.conversation.clamp_scroll(height, &self.theme);
                 Ok(TuiReadOutcome::Pending)
             }
             Action::ScrollHalfDown => {
                 self.conversation.scroll_down(5);
+                let height = self.last_conversation_area.map(|r| r.height).unwrap_or(20);
+                self.conversation.clamp_scroll(height, &self.theme);
                 Ok(TuiReadOutcome::Pending)
             }
             Action::ScrollTop => {
@@ -510,6 +530,21 @@ impl TuiApp {
                 agent_view.render_overlay(area, f, theme);
             }
         })?;
+
+        // Cache the conversation pane rect for scroll clamping.
+        // Layout is deterministic: status bar (1 row) + conversation (min 5) + input (6),
+        // with optional right-side dashboard (32 cols) if width >= 100.
+        let area = self.terminal.size().unwrap_or_default();
+        let has_dash = area.width >= 100;
+        let dash_w: u16 = if has_dash { 32 } else { 0 };
+        let left_w = area.width.saturating_sub(dash_w);
+        let conv_h = area.height.saturating_sub(1 + 6); // minus status bar + input
+        self.last_conversation_area = Some(ratatui::layout::Rect {
+            x: 0,
+            y: 1,
+            width: left_w,
+            height: conv_h,
+        });
 
         // Clear dirty flags after successful render
         self.conversation.mark_clean();
