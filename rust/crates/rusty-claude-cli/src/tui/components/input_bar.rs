@@ -201,9 +201,26 @@ impl InputBar {
                     self.dirty = true;
                     return InputOutcome::None;
                 }
-                self.showing_completions = false;
                 self.textarea.input(key);
                 self.dirty = true;
+
+                // Auto-show completions when the text starts with `/` and
+                // there are matching commands.  Previously completions only
+                // appeared on explicit Tab press — now they pop up as the
+                // user types, filtered by the current prefix.
+                let current_text: String = self.textarea.lines().join("");
+                if current_text.starts_with('/') && current_text.len() > 1 {
+                    let prefix = current_text.as_str();
+                    let has_matches = self
+                        .slash_completions
+                        .iter()
+                        .any(|c| c.starts_with(prefix));
+                    self.showing_completions = has_matches;
+                    self.completion_index = 0;
+                } else {
+                    self.showing_completions = false;
+                }
+
                 InputOutcome::None
             }
         }
