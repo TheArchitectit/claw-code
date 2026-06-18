@@ -7413,21 +7413,31 @@ fn run_tui_repl(mut cli: LiveCli) -> Result<(), Box<dyn std::error::Error>> {
                     // capture the output, re-enter the TUI, and push into the
                     // conversation pane.
                     if let Ok(Some(command)) = SlashCommand::parse(&trimmed) {
-                        // Commands that need interactive terminal access
-                        // (permissions prompts, setup wizard) leave alternate
-                        // screen and let the user interact directly.
                         let is_setup = matches!(command, SlashCommand::Setup);
-                        app.leave_for_turn()?;
+                        let needs_interactive = is_setup
+                            || matches!(command, SlashCommand::Permissions { .. });
 
-                        // Capture stdout/stderr so command output survives the
-                        // re-enter into the TUI instead of being wiped by the
-                        // alternate-screen swap.
+                        // Only leave alternate screen for commands that need
+                        // interactive terminal access (permissions prompts,
+                        // setup wizard).  Leaving and re-entering breaks
+                        // gag-based stdout capture, so for normal commands
+                        // (like /status, /model, /team, /help) we stay in the
+                        // TUI and capture output directly.
+                        if needs_interactive {
+                            app.leave_for_turn()?;
+                        }
+
+                        // Capture stdout/stderr so command output survives
+                        // the alternate-screen swap (if we left) or stays
+                        // in-memory (if we didn't).
                         let (result, stdout, stderr) = crate::tui::capture::capture_output(|| {
                             cli.handle_repl_command(command)
                         });
                         let should_persist = result?;
 
-                        app.reenter_after_turn()?;
+                        if needs_interactive {
+                            app.reenter_after_turn()?;
+                        }
 
                         // `true` means the runtime/session was mutated
                         // (e.g. /permissions, /model), not that we should

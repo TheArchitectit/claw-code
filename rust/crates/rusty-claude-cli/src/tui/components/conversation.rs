@@ -127,6 +127,19 @@ impl ConversationPane {
         self.dirty = true;
     }
 
+    /// Maximum scroll offset given current content and a known pane height.
+    /// Called with the pane height from the last render pass.
+    pub fn max_scroll_for_height(&self, pane_height: u16, theme: &TuiTheme) -> u16 {
+        let cache = self.cache.borrow();
+        let pane_rows = (pane_height.saturating_sub(1) as usize).max(1);
+        let total_visual = cache.wrapped_lines.len();
+        if total_visual <= pane_rows {
+            // Content fits without scrolling; clamp to 0.
+            return 0;
+        }
+        (total_visual - pane_rows) as u16
+    }
+
     pub fn scroll_up(&mut self, amount: u16) {
         self.scroll = self.scroll.saturating_add(amount);
         self.dirty = true;
@@ -145,6 +158,16 @@ impl ConversationPane {
     pub fn scroll_bottom(&mut self) {
         self.scroll = 0;
         self.dirty = true;
+    }
+
+    /// Clamp scroll to valid range for a given pane height.
+    /// Called after scroll changes to prevent going off-screen.
+    pub fn clamp_scroll(&mut self, pane_height: u16, theme: &TuiTheme) {
+        let max = self.max_scroll_for_height(pane_height, theme);
+        if self.scroll > max {
+            self.scroll = max;
+            self.dirty = true;
+        }
     }
 
     fn auto_scroll(&mut self) {
@@ -184,8 +207,16 @@ impl Component for ConversationPane {
         self.rebuild_cache(area.width, theme);
 
         let cache = self.cache.borrow();
-        let pane_rows = (area.height.saturating_sub(1) as usize).max(1);
         let total_visual = cache.wrapped_lines.len();
+        // Only reserve a scrollbar row when content actually overflows.
+        // Previously we always subtracted 1, which cut off the last line
+        // when content fit within the pane.
+        let needs_scrollbar = total_visual > area.height as usize;
+        let pane_rows = if needs_scrollbar {
+            (area.height.saturating_sub(1) as usize).max(1)
+        } else {
+            area.height as usize
+        };
 
         let scroll = self.scroll as usize;
         let max_offset = total_visual.saturating_sub(pane_rows);
