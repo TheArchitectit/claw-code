@@ -7513,8 +7513,18 @@ fn run_tui_repl(mut cli: LiveCli) -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
 
-                    // Unrecognized slash command
-                    app.push_system_message(&format!("Unknown command: {trimmed}"));
+                    // Slash command parse failed — show the actual error
+                    // (e.g. "Unsupported /permissions mode" or "unknown
+                    // command") instead of a generic "Unknown command".
+                    match SlashCommand::parse(&trimmed) {
+                        Err(e) => {
+                            app.push_system_message(&e.to_string());
+                        }
+                        Ok(None) => {
+                            app.push_system_message(&format!("Unknown command: {trimmed}"));
+                        }
+                        Ok(Some(_)) => unreachable!(),
+                    }
                     continue;
                 }
 
