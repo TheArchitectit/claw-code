@@ -7414,8 +7414,8 @@ fn run_tui_repl(mut cli: LiveCli) -> Result<(), Box<dyn std::error::Error>> {
                     // conversation pane.
                     if let Ok(Some(command)) = SlashCommand::parse(&trimmed) {
                         let is_setup = matches!(command, SlashCommand::Setup);
-                        let needs_interactive = is_setup
-                            || matches!(command, SlashCommand::Permissions { .. });
+                        let needs_interactive =
+                            is_setup || matches!(command, SlashCommand::Permissions { .. });
 
                         if needs_interactive {
                             // Interactive commands (/setup, /permissions) need
@@ -7436,9 +7436,7 @@ fn run_tui_repl(mut cli: LiveCli) -> Result<(), Box<dyn std::error::Error>> {
                                 cli.persist_session()?;
                             }
                             if !stdout.is_empty() {
-                                app.push_system_message(
-                                    &crate::tui_update::strip_ansi(&stdout),
-                                );
+                                app.push_system_message(&crate::tui_update::strip_ansi(&stdout));
                             }
                             if !stderr.is_empty() {
                                 app.push_system_message(&format!(
@@ -7448,8 +7446,7 @@ fn run_tui_repl(mut cli: LiveCli) -> Result<(), Box<dyn std::error::Error>> {
                             }
                             if is_setup {
                                 let cwd = std::env::current_dir().unwrap_or_default();
-                                let config =
-                                    runtime::ConfigLoader::default_for(&cwd).load().ok();
+                                let config = runtime::ConfigLoader::default_for(&cwd).load().ok();
                                 let model = config
                                     .as_ref()
                                     .and_then(|c| c.provider().model())
@@ -7479,19 +7476,16 @@ fn run_tui_repl(mut cli: LiveCli) -> Result<(), Box<dyn std::error::Error>> {
                         // the leave→capture→reenter cycle that breaks gag
                         // (the fd redirect can't survive the alt-screen
                         // transition).
-                        let (result, stdout, stderr) =
-                            crate::tui::capture::capture_output(|| {
-                                cli.handle_repl_command(command)
-                            });
+                        let (result, stdout, stderr) = crate::tui::capture::capture_output(|| {
+                            cli.handle_repl_command(command)
+                        });
                         let should_persist = result?;
 
                         if should_persist {
                             cli.persist_session()?;
                         }
                         if !stdout.is_empty() {
-                            app.push_system_message(
-                                &crate::tui_update::strip_ansi(&stdout),
-                            );
+                            app.push_system_message(&crate::tui_update::strip_ansi(&stdout));
                         } else {
                             // Some commands return Ok(false) and print nothing
                             // (e.g. /status calls print_status which uses
