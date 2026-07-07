@@ -683,13 +683,15 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
             max_output_tokens: 8_192,
             context_window_tokens: 131_072,
         }),
-        "qwen-max" => Some(ModelTokenLimit {
-            max_output_tokens: 8_192,
+        // Qwen models via DashScope / OpenAI-compat
+        "qwen3.6-35b-fast" | "qwen3-235b-a22b" | "qwen-max" | "qwen-plus" | "qwen-turbo"
+        | "qwen-qwq" => Some(ModelTokenLimit {
+            max_output_tokens: 16_384,
             context_window_tokens: 131_072,
         }),
-        "qwen-plus" => Some(ModelTokenLimit {
-            max_output_tokens: 8_192,
-            context_window_tokens: 131_072,
+        "glm-5.1-fast" => Some(ModelTokenLimit {
+            max_output_tokens: 16_384,
+            context_window_tokens: 200_000,
         }),
         // Groq compound systems are exposed through an OpenAI-compatible API
         // but cap completions at 8,192 output tokens. Without this metadata
