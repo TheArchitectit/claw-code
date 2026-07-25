@@ -15,3 +15,4 @@ status-help.txt
 .port_sessions/
 # Local agent session state
 .gjc/
+.claude/
