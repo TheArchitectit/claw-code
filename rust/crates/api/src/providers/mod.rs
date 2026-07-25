@@ -701,6 +701,8 @@ pub fn model_token_limit(model: &str) -> Option<ModelTokenLimit> {
             max_output_tokens: 8_192,
             context_window_tokens: 131_072,
         }),
+        // Unknown models return None so preflight skips the context-window
+        // check and lets the API enforce its own limits.
         _ => None,
     }
 }
