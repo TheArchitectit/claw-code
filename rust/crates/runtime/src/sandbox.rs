@@ -282,6 +282,36 @@ fn command_exists(command: &str) -> bool {
         .is_some_and(|paths| env::split_paths(&paths).any(|path| path.join(command).exists()))
 }
 
+/// Candidate `unshare` user-namespace mapping options, in preference order.
+const UNSHARE_MAPPING_CANDIDATES: &[&[&str]] = &[&["--user", "--map-root-user"]];
+
+/// Probe a candidate `unshare` mapping invocation with a trivial program.
+fn unshare_probe(args: &[&str]) -> bool {
+    std::process::Command::new("unshare")
+        .args(args)
+        .arg("true")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// The first mapping option set that works on this machine, if any.
+///
+/// Probes are cached for the process lifetime; a missing `unshare` binary or a
+/// kernel that refuses every mapping yields `None`.
+fn working_unshare_mapping() -> Option<&'static [&'static str]> {
+    use std::sync::OnceLock;
+    static MAPPING: OnceLock<Option<&'static [&'static str]>> = OnceLock::new();
+    *MAPPING.get_or_init(|| {
+        UNSHARE_MAPPING_CANDIDATES
+            .iter()
+            .copied()
+            .find(|args| unshare_probe(args))
+    })
+}
+
 /// Check whether `unshare --user` actually works on this system.
 /// On some CI environments (e.g. GitHub Actions), the binary exists but
 /// user namespaces are restricted, causing silent failures.
@@ -292,13 +322,7 @@ fn unshare_user_namespace_works() -> bool {
         if !command_exists("unshare") {
             return false;
         }
-        std::process::Command::new("unshare")
-            .args(["--user", "--map-root-user", "true"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+        working_unshare_mapping().is_some()
     })
 }
 
