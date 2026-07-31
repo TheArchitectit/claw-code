@@ -220,15 +220,18 @@ pub fn build_linux_sandbox_command(
         return None;
     }
 
-    let mut args = vec![
-        "--user".to_string(),
-        "--map-root-user".to_string(),
+    let mut args: Vec<String> = working_unshare_mapping()
+        .unwrap_or(UNSHARE_MAPPING_CANDIDATES[0])
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+    args.extend([
         "--mount".to_string(),
         "--ipc".to_string(),
         "--pid".to_string(),
         "--uts".to_string(),
         "--fork".to_string(),
-    ];
+    ]);
     if status.network_active {
         args.push("--net".to_string());
     }
@@ -283,7 +286,16 @@ fn command_exists(command: &str) -> bool {
 }
 
 /// Candidate `unshare` user-namespace mapping options, in preference order.
-const UNSHARE_MAPPING_CANDIDATES: &[&[&str]] = &[&["--user", "--map-root-user"]];
+///
+/// Most systems accept `--map-root-user` alone. On kernels or containers that
+/// block unprivileged writes to `/proc/self/uid_map` (e.g. GitHub Actions,
+/// restricted AppArmor profiles), util-linux instead delegates to the setuid
+/// `newuidmap`/`newgidmap` helpers when `--map-auto` is also present; that
+/// requires the current user to have a range in `/etc/subuid`/`/etc/subgid`.
+const UNSHARE_MAPPING_CANDIDATES: &[&[&str]] = &[
+    &["--user", "--map-root-user"],
+    &["--user", "--map-root-user", "--map-auto"],
+];
 
 /// Probe a candidate `unshare` mapping invocation with a trivial program.
 fn unshare_probe(args: &[&str]) -> bool {
@@ -381,6 +393,21 @@ mod tests {
         assert!(request.network_isolation);
         assert_eq!(request.filesystem_mode, FilesystemIsolationMode::AllowList);
         assert_eq!(request.allowed_mounts, vec!["tmp"]);
+    }
+
+    #[test]
+    fn mapping_candidates_prefer_plain_root_mapping() {
+        assert!(!super::UNSHARE_MAPPING_CANDIDATES.is_empty());
+        for candidate in super::UNSHARE_MAPPING_CANDIDATES {
+            assert!(candidate.contains(&"--user"));
+            assert!(candidate.contains(&"--map-root-user"));
+        }
+        // The plain form must be tried first; `--map-auto` is only a fallback
+        // for kernels/containers that block unprivileged uid_map writes.
+        assert_eq!(
+            super::UNSHARE_MAPPING_CANDIDATES[0],
+            &["--user", "--map-root-user"]
+        );
     }
 
     #[test]
