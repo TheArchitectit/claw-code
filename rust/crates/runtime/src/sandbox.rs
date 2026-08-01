@@ -290,8 +290,12 @@ fn command_exists(command: &str) -> bool {
 /// Most systems accept `--map-root-user` alone. On kernels or containers that
 /// block unprivileged writes to `/proc/self/uid_map` (e.g. GitHub Actions,
 /// restricted AppArmor profiles), util-linux instead delegates to the setuid
-/// `newuidmap`/`newgidmap` helpers when `--map-auto` is also present; that
-/// requires the current user to have a range in `/etc/subuid`/`/etc/subgid`.
+/// `newuidmap`/`newgidmap` helpers when `--map-auto` is also present.
+///
+/// That fallback therefore depends on the setuid helpers (the `uidmap`
+/// package on Debian/Ubuntu) and on the current user having a range in
+/// `/etc/subuid` and `/etc/subgid`. When either is missing, `--map-auto`
+/// fails and the startup probe rejects the candidate, keeping the plain form.
 const UNSHARE_MAPPING_CANDIDATES: &[&[&str]] = &[
     &["--user", "--map-root-user"],
     &["--user", "--map-root-user", "--map-auto"],
