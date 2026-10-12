@@ -4234,12 +4234,12 @@ fn check_permission_health(permission_mode: PermissionModeProvenance) -> Diagnos
     let specs = mvp_tool_specs();
     let tools_satisfied = specs
         .iter()
-        .filter(|spec| permission_mode.mode >= spec.required_permission)
+        .filter(|spec| permission_mode.mode.covers(spec.required_permission))
         .map(|spec| spec.name)
         .collect::<Vec<_>>();
     let tools_gated = specs
         .iter()
-        .filter(|spec| permission_mode.mode < spec.required_permission)
+        .filter(|spec| !permission_mode.mode.covers(spec.required_permission))
         .map(|spec| spec.name)
         .collect::<Vec<_>>();
 
